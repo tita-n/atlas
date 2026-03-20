@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+atlas_memory.json
+package-lock.json
+bun.lock
