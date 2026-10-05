@@ -162,18 +162,42 @@ CLI flags > ATLAS_* environment variables > ~/.atlas/config.json > provider defa
 
 ## CLI
 
-Start a multi-turn conversation:
+Start a conversation:
+
+```sh
+atlas
+```
+
+In an interactive terminal this opens the terminal interface (see
+[The terminal interface](#the-terminal-interface)). Anything else — a pipe, a
+script, CI — automatically gets the plain front-end instead, so scripted output
+is never corrupted by a full-screen interface.
+
+Use the plain front-end explicitly:
 
 ```sh
 atlas chat
 ```
 
-Type a message, then press Enter. Atlas resumes the most recently active conversation and loads its last 20 messages. It stores the conversation and durable user facts in `~/.atlas/atlas.db`, so a new process starts with the same context. Type `/exit` or press Ctrl+D to leave.
+Both front-ends drive the same assistant, with the same memory, the same
+conversation continuity, and the same permission gates. Type a message and
+press Enter. Atlas resumes the most recently active conversation and loads its
+last 20 messages. It stores the conversation and durable user facts in
+`~/.atlas/atlas.db`, so a new process starts with the same context. Type `/exit`
+or press Ctrl+D to leave.
+
+Force the interface explicitly:
+
+```sh
+atlas tui      # graphical terminal interface
+atlas chat     # plain text
+```
 
 Start a fresh conversation explicitly:
 
 ```sh
 atlas chat --new
+atlas tui --new
 ```
 
 Every user and assistant message is written immediately. If the process stops during a provider request, the user message and all earlier completed turns remain in SQLite. Atlas also performs a small asynchronous fact-extraction call after each successful turn; the main response is shown without waiting for that extra call.
@@ -343,6 +367,39 @@ A self-hosted Anthropic-compatible endpoint can use the same provider with a dif
 
 Switching providers requires changing configuration only. The CLI and conversation manager do not branch on provider wire formats. Provider adapters retry transient transport failures and HTTP 408/429/5xx responses up to two times with bounded backoff; permanent 4xx request/auth/model errors are not retried.
 
+## Streaming
+
+`Conversation.send` accepts an optional `onNarrationDelta`, which receives
+narration as the model produces it:
+
+```ts
+const reply = await conversation.send(provider, 'List the files here.', {
+  onNarrationDelta: (text) => process.stdout.write(text),
+});
+console.log('\n', reply.content);
+```
+
+The returned `ChatCompletionResponse` is identical to the non-streaming one, so
+this is purely about delivery. Tool calls, the permission gate, and tool results
+behave exactly as they do without streaming, and a provider that cannot stream
+simply delivers the finished text in one call.
+
+Two guarantees hold _during_ streaming, not just on the finished reply:
+
+- **Tool-call content is never shown as narration.** Providers stream tool
+  fragments in two different shapes — OpenAI-compatible sends index-keyed
+  fragments of the function arguments, Anthropic-compatible sends
+  `input_json_delta` fragments closed by `content_block_stop`. Both are
+  assembled internally and surfaced only once a complete, parseable call
+  exists, which is also why the dangerous-command gate still fires before
+  anything executes.
+- **Inlined payloads are withheld.** If a model emits JSON or a fenced block
+  inside its own prose, only the provably-safe prefix is delivered; the rest is
+  held back and cleaned when the turn ends.
+
+The terminal interface does not use this yet — it still renders a finished
+reply — so `atlas` behaves identically today.
+
 ## Programmatic use
 
 The package exports the provider interface, adapters, factory, configuration loader, and conversation manager from `atlas`:
@@ -412,6 +469,135 @@ npm run build
 
 The test suite injects a mocked `fetch` implementation into each provider adapter, uses temporary real SQLite files for persistence and shell tests, and never makes network calls.
 
+## Phase 3: voice input
+
+Voice activation is gated to one enrolled voice. A wake phrase from anyone else
+is ignored, silently, and nothing is acknowledged.
+
+The pipeline is: `openWakeWord` (wake phrase) -> `ECAPA-TDNN` (is this the
+enrolled owner?) -> `whisper.cpp` (transcribe) -> the existing conversation
+loop. Voice text is handed to the same `Conversation` object `atlas chat` uses;
+there is no separate voice conversation path.
+
+Every component runs as its own local process and speaks the
+[Wyoming protocol](https://github.com/OHF-Voice/wyoming), an Open Home
+Foundation open standard. Wyoming has no authentication or encryption by
+design, so Atlas binds every service to `127.0.0.1` and never opens a port to
+the network.
+
+| Command                     | Purpose                                                 |
+| --------------------------- | ------------------------------------------------------- |
+| `atlas voice enroll`        | Record samples and build a voiceprint.                  |
+| `atlas voice enroll --redo` | Replace an existing enrollment.                         |
+| `atlas voice listen`        | Run the always-on wake, verify, and dictation pipeline. |
+| `atlas voice test-wake`     | Report detections and speaker scores without acting.    |
+| `atlas voice corrections`   | View logged transcripts and corrections.                |
+
+### Required services
+
+```sh
+# wake word
+cd rhasspy/wyoming-openwakeword && script/run --uri tcp://127.0.0.1:10400
+
+# speech to text
+cd rhasspy/wyoming-whisper-cpp && script/run --uri tcp://127.0.0.1:10300 --model base.en
+
+# speaker verification (shipped with Atlas)
+pip install speechbrain torch
+python3 voice-bridge/atlas-speaker-verification.py --uri tcp://127.0.0.1:10401
+```
+
+### Enrollment and your voice
+
+The voiceprint is biometric-adjacent. It is written to
+`~/.atlas/voiceprint/voiceprint.json` with mode `0600` inside a `0700`
+directory, permissions are tightened on every read, and embedding values are
+never written to logs, the audit log, or error messages.
+
+Enrollment asks for several full sentences rather than the wake word. That is
+deliberate: speaker verification degrades below roughly three seconds of speech
+(arXiv:2606.16115), and "Hey Atlas" is about one second. At least eight seconds
+of speech is required.
+
+### Tuning
+
+```sh
+export ATLAS_VOICE_WAKE_THRESHOLD=0.5        # wake probability
+export ATLAS_VOICE_SPEAKER_THRESHOLD=0.55    # cosine similarity
+export ATLAS_VOICE_STT_MODEL=base.en
+export ATLAS_VOICE_AUDIO_BACKEND=pw-record   # or arecord
+export ATLAS_VOICE_AUDIO_DEVICE=default
+```
+
+Use `atlas voice test-wake` to measure both scores in your room and set the
+thresholds from real numbers rather than defaults.
+
+### Known limitations
+
+- This is a usability gate, not authentication. ECAPA is not designed to
+  resist replayed or recorded speech, so a recording of your voice played
+  through a speaker can get through. Do not treat it as a security boundary.
+- English only; openWakeWord's synthetic training data is English-only.
+- Transcription is not streamed; the command is transcribed once you stop
+  speaking.
+
+## The terminal interface
+
+`atlas` in an interactive terminal opens a graphical interface built with
+[Ink](https://github.com/vadimdemedes/ink) on Node. It is a rendering layer only:
+it submits text to the same Phase 4 assistant session the plain front-end uses,
+and it does not change conversation, memory, or permission behavior.
+
+### States
+
+A reactive indicator shows what Atlas is doing. The five states are shared
+vocabulary with the eventual browser orb, so the two interfaces cannot drift
+into unrelated state machines:
+
+| State       | Meaning                                    |
+| ----------- | ------------------------------------------ |
+| `IDLE`      | Ready for input                            |
+| `THINKING`  | Request in flight, no tool yet             |
+| `RUNNING`   | A shell command is running                 |
+| `CONFIRM`   | A dangerous-command gate is waiting on you |
+| `ANSWERING` | The reply is being revealed                |
+
+### Narration versus execution detail
+
+Phase 4 returns each turn as two separate strings: the conversational
+`narration` and the raw `detail`. The interface keeps them apart rather than
+interleaving them as identical-looking text. Narration is plain prose; raw
+commands and output go into a bordered panel labelled **execution detail**,
+collapsed by default. Press <kbd>Ctrl</kbd>+<kbd>O</kbd> to expand or collapse
+it. The distinction survives with color disabled: the border, the header word,
+and the indentation carry it, not the hue.
+
+### Color and motion are never load-bearing
+
+Every state is also conveyed as a plain-text label, so the interface stays
+fully usable when color or animation is unavailable. `NO_COLOR`, `TERM=dumb`, a
+non-TTY stdout, and screen readers all degrade to a working, less pretty Atlas
+rather than a broken one. With `NO_COLOR` set, Atlas emits no color escape
+codes at all. Respects `NO_COLOR`, `TERM=dumb`, and non-interactive stdout.
+
+### Reply rendering
+
+Replies are revealed progressively so they read as they are produced rather
+than appearing all at once. Note that Atlas resolves a whole turn before
+rendering it, so this is a reveal of a finished reply rather than true token
+streaming; see `docs/tui-design.md` section 3 for why, and for the narrow
+`AssistantSession` change that would make it genuine.
+
+### Keys
+
+| Key                          | Action                                |
+| ---------------------------- | ------------------------------------- |
+| <kbd>Enter</kbd>             | Submit, or answer a confirmation gate |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Expand or collapse execution detail   |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Leave                                 |
+| <kbd>Ctrl</kbd>+<kbd>D</kbd> | Leave                                 |
+| <kbd>Esc</kbd>               | Leave                                 |
+
 ## Scope
 
-Phase 2 intentionally does not include conversation compaction, browser automation, voice, wake words, skills, coding-agent orchestration, self-modification, or an orb UI. Those can be layered on the provider, persistence, conversation, and shell interfaces in later phases.
+Phases 2 through 4 do not include conversation compaction, browser automation, text-to-speech output, skills, coding-agent orchestration, self-modification, or the browser orb UI. The terminal interface is a rendering layer over the assistant session, not the orb. Those can be layered on the provider, persistence, conversation, and shell interfaces in later phases.
