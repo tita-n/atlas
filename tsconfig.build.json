@@ -5,6 +5,12 @@
     "rootDir": "src",
     "noEmit": false
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["tests", "examples"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
+  "exclude": [
+    "tests",
+    "examples"
+  ]
 }

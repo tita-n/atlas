@@ -42,6 +42,11 @@ import { ShellSession } from './shell/shell-session.js';
 import { ShellTool } from './shell/shell-tool.js';
 import { buildSystemPrompt } from './memory/context-builder.js';
 import { openDatabase, type MemoryDatabase } from './memory/database.js';
+
+import { createAssistantRuntime } from './conversation/assistant-runtime.js';
+import { runAssistantCommand } from './conversation/assistant-commands.js';
+import { canRunTui } from './tui/can-run.js';
+import { runVoiceCorrections } from './voice/cli.js';
 import { ConversationRepository } from './memory/conversation-repository.js';
 import { FactExtractor } from './memory/fact-extractor.js';
 import { FactsRepository } from './memory/facts-repository.js';
@@ -68,6 +73,8 @@ interface ChatOptions extends GlobalOptions {
   maxTokens?: number;
   temperature?: number;
   new?: boolean;
+  /** Use the pre-Phase-4 chat loop. */
+  rawChat?: boolean;
 }
 
 interface ConfigInitOptions extends GlobalOptions {
@@ -182,6 +189,34 @@ class AsyncLineReader {
   public close(): void {
     this.#readline.close();
   }
+}
+
+/**
+ * Options shared by every front-end that drives the assistant.
+ *
+ * `chat` and `tui` must accept exactly the same flags, or a user switching
+ * between them would find some invocations silently ignored.
+ */
+function addAssistantOptions(command: Command): Command {
+  return addCommonOptions(command)
+    .option(
+      '--provider <provider>',
+      'provider wire format: openai-compatible or anthropic-compatible',
+    )
+    .option('--api-key <key>', 'override the configured API key')
+    .option('--base-url <url>', 'override the configured API root')
+    .option('--model <model>', 'override the configured model')
+    .option(
+      '--max-tokens <number>',
+      'override max output tokens',
+      parseMaxTokens,
+    )
+    .option(
+      '--temperature <number>',
+      'sampling temperature from 0 to 2',
+      parseTemperature,
+    )
+    .option('--new', 'start a fresh conversation', false);
 }
 
 function addCommonOptions(command: Command): Command {
@@ -383,6 +418,166 @@ async function runConfigInit(
 
   await saveConfig(configPath, config);
   console.log(`Configuration saved to ${configPath}.`);
+}
+
+/** Commands available inside the assistant loop. */
+
+/**
+ * The Phase 4 assistant loop.
+ *
+ * Resumes the most recent conversation unless `--new` is passed, retrieves
+ * relevant memory per turn, runs safe shell commands through the Phase 2
+ * permission gates, and shows execution detail in a block separate from the
+ * conversational narration.
+ */
+async function runAssistant(
+  globalOptions: GlobalOptions,
+  options: ChatOptions,
+): Promise<void> {
+  const debug = debugOptions(globalOptions, options);
+  let readline: ReadlineInterface | undefined;
+
+  // Construction and teardown live in the runtime so that another front-end
+  // can start the same assistant without duplicating this wiring.
+  const started = await createAssistantRuntime({
+    configOptions: pathOptions(globalOptions, options),
+    overrides: compactOverrides(options),
+    newConversation: options.new === true,
+    // Confirmation is read off this readline interface, which only exists once
+    // the loop below has created it; the call is deferred until a gated
+    // command actually needs it.
+    requestConfirmation: async (phrase) =>
+      new Promise((resolve) => {
+        if (readline === undefined) {
+          resolve(false);
+          return;
+        }
+        readline.question(
+          `Type ${phrase} to run it, anything else to cancel: `,
+          (answer) => {
+            resolve(answer.trim().toUpperCase() === phrase.toUpperCase());
+          },
+        );
+      }),
+  });
+
+  if (started.locked) {
+    console.log(started.message);
+    return;
+  }
+  const { runtime } = started;
+  const { session, facts, corrections } = runtime;
+
+  try {
+    readline = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: process.stdin.isTTY ?? false,
+    });
+
+    if (runtime.resumedConversationId === undefined) {
+      console.log(
+        'Started a new conversation. This is saved; run atlas again to resume.',
+      );
+    } else {
+      console.log('Resuming your last conversation.');
+    }
+    console.log('Type /help for commands, /exit or Ctrl+D to quit.\n');
+
+    for (;;) {
+      const line = await prompt(readline, 'atlas> ');
+      if (line === undefined) break;
+      const command = runAssistantCommand(line, { facts, corrections });
+      if (command.kind === 'exit') break;
+      if (command.kind === 'output') {
+        if (command.text !== '') console.log(command.text);
+        continue;
+      }
+      const message = command.message;
+
+      process.stdout.write('atlas: ');
+      try {
+        const turn = await session.handleInput(message);
+        if (turn.narration === '') {
+          // An empty reply is a provider failure, not a real answer. Say so
+          // rather than pretending Atlas had nothing to add.
+          console.log(
+            '(no reply came back from the provider; nothing was learned this turn)',
+          );
+        } else {
+          console.log(turn.narration);
+        }
+        if (turn.detail !== '') {
+          console.log('\n--- execution detail ---');
+          console.log(turn.detail);
+          console.log('--- end detail ---\n');
+        }
+      } catch (error) {
+        if (debug) printError(error, true);
+        else
+          console.log(
+            `Something went wrong: ${error instanceof AtlasError ? error.message : String(error)}`,
+          );
+      }
+    }
+  } finally {
+    readline?.close();
+    try {
+      await runtime.close();
+    } catch (error) {
+      if (debug) printError(error, true);
+    }
+  }
+}
+
+/**
+ * Runs the graphical front-end when it can, and the plain one when it cannot.
+ *
+ * Falls back rather than refusing: a pipe, a CI job, or a redirected script
+ * still gets a working Atlas, just without the interface.
+ */
+async function runTuiFrontEnd(
+  globalOptions: GlobalOptions,
+  options: ChatOptions,
+): Promise<void> {
+  if (!canRunTui()) {
+    await runAssistant(globalOptions, options);
+    return;
+  }
+  const { runTui } = await import('./tui/run.js');
+  await runTui({
+    configOptions: pathOptions(globalOptions, options),
+    overrides: compactOverrides(options),
+    newConversation: options.new === true,
+  });
+}
+
+/** Reads one line, resolving undefined when the input stream closes. */
+function prompt(
+  readline: ReadlineInterface,
+  label: string,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (value: string | undefined): void => {
+      if (done) return;
+      done = true;
+      readline.off('close', onClose);
+      resolve(value);
+    };
+    const onClose = (): void => {
+      finish(undefined);
+    };
+    readline.once('close', onClose);
+    try {
+      readline.question(label, (answer) => {
+        finish(answer);
+      });
+    } catch {
+      // The interface can close between the check above and the question.
+      finish(undefined);
+    }
+  });
 }
 
 async function runChat(
@@ -943,26 +1138,15 @@ export async function main(argv = process.argv): Promise<void> {
     .option('-c, --config <path>', 'path to the Atlas config file')
     .option('--debug', 'show full error details', false);
 
-  const chat = addCommonOptions(program.command('chat'))
-    .description('start an interactive multi-turn chat')
-    .option(
-      '--provider <provider>',
-      'provider wire format: openai-compatible or anthropic-compatible',
-    )
-    .option('--api-key <key>', 'override the configured API key')
-    .option('--base-url <url>', 'override the configured API root')
-    .option('--model <model>', 'override the configured model')
-    .option(
-      '--max-tokens <number>',
-      'override max output tokens',
-      parseMaxTokens,
-    )
-    .option(
-      '--temperature <number>',
-      'sampling temperature from 0 to 2',
-      parseTemperature,
-    )
-    .option('--new', 'start a fresh conversation', false);
+  const chat = addAssistantOptions(program.command('chat')).description(
+    'start an interactive multi-turn chat (plain text)',
+  );
+
+  // Explicit alias for the graphical front-end, which is also what bare
+  // `atlas` runs when stdout is interactive.
+  const tui = addAssistantOptions(program.command('tui')).description(
+    'start the interactive terminal interface',
+  );
 
   const memory = program.command('memory').description('manage durable memory');
   const memoryList = memory.command('list').description('list stored facts');
@@ -999,6 +1183,36 @@ export async function main(argv = process.argv): Promise<void> {
     .description('revoke one durable approval grant')
     .argument('<id>', 'grant id', parseGrantId);
 
+  const voice = program
+    .command('voice')
+    .description('voice input: wake word, speaker verification, and dictation');
+  const voiceEnroll = voice
+    .command('enroll')
+    .description('enroll a voiceprint for voice activation')
+    .option('--redo', 'replace an existing enrollment', false)
+    .option('--backend <name>', 'voice backend: sherpa-onnx or wyoming');
+  const voiceListen = voice
+    .command('listen')
+    .description('run the always-on wake, verify, and dictation pipeline')
+    .option('--backend <name>', 'voice backend: sherpa-onnx or wyoming');
+  const voiceTestWake = voice
+    .command('test-wake')
+    .description('report wake detections and speaker scores without acting')
+    .option('--backend <name>', 'voice backend: sherpa-onnx or wyoming')
+    .option(
+      '--keywords <path>',
+      'test the exact keyword lines in this file instead of the generated ones',
+    );
+  const voiceSetup = voice
+    .command('setup-models')
+    .description('download and cache the voice models, showing sizes first')
+    .option('--backend <name>', 'voice backend: sherpa-onnx or wyoming')
+    .option('--yes', 'do not prompt before downloading', false);
+  const voiceCorrections = voice
+    .command('corrections')
+    .description('view logged transcripts and their corrections')
+    .option('--limit <number>', 'entries to show', parseAuditLimit);
+
   const config = program
     .command('config')
     .description('manage Atlas configuration');
@@ -1022,7 +1236,26 @@ export async function main(argv = process.argv): Promise<void> {
   chat.action(async () => {
     const global = program.opts<GlobalOptions>();
     const local = chat.opts<ChatOptions>();
-    await runChat(global, local);
+    // Phase 4: the assistant loop replaces the raw chat loop.
+    if (local.rawChat === true) {
+      await runChat(global, local);
+      return;
+    }
+    await runAssistant(global, local);
+  });
+
+  tui.action(async () => {
+    const global = program.opts<GlobalOptions>();
+    const local = tui.opts<ChatOptions>();
+    await runTuiFrontEnd(global, local);
+  });
+
+  // Bare `atlas`: the graphical interface in a terminal, the plain front-end
+  // everywhere else. Piped and scripted use must never get a TUI, and the
+  // plain path stays available explicitly as `atlas chat`.
+  program.action(async () => {
+    const global = program.opts<GlobalOptions>();
+    await runTuiFrontEnd(global, { ...program.opts<ChatOptions>() });
   });
 
   memoryList.action(() => {
@@ -1041,6 +1274,41 @@ export async function main(argv = process.argv): Promise<void> {
     },
   );
   permissionsSetup.action(async () => runPermissionsSetup());
+  voiceEnroll.action(async () => {
+    const { runVoiceEnroll } = await import('./voice/cli.js');
+    const opts = voiceEnroll.opts<{ redo: boolean; backend?: string }>();
+    await runVoiceEnroll({
+      redo: opts.redo,
+      ...(opts.backend === undefined ? {} : { backend: opts.backend }),
+    });
+  });
+  voiceListen.action(async () => {
+    const { runVoiceListen } = await import('./voice/cli.js');
+    const opts = voiceListen.opts<{ backend?: string }>();
+    await runVoiceListen(
+      opts.backend === undefined ? {} : { backend: opts.backend },
+    );
+  });
+  voiceTestWake.action(async () => {
+    const { runVoiceTestWake } = await import('./voice/cli.js');
+    const opts = voiceTestWake.opts<{ backend?: string; keywords?: string }>();
+    await runVoiceTestWake({
+      ...(opts.backend === undefined ? {} : { backend: opts.backend }),
+      ...(opts.keywords === undefined ? {} : { keywords: opts.keywords }),
+    });
+  });
+  voiceSetup.action(async () => {
+    const { runVoiceSetupModels } = await import('./voice/cli.js');
+    const opts = voiceSetup.opts<{ backend?: string; yes: boolean }>();
+    await runVoiceSetupModels({
+      ...(opts.backend === undefined ? {} : { backend: opts.backend }),
+      yes: opts.yes,
+    });
+  });
+  voiceCorrections.action(() => {
+    runVoiceCorrections(voiceCorrections.opts<{ limit: number }>().limit);
+  });
+
   permissionsGrants.action(async () => runPermissionGrants());
   permissionsRevoke.action(async (id: string) => runPermissionRevoke(id));
 

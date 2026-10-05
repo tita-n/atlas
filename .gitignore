@@ -9,3 +9,7 @@ coverage/
 
 # npm pack artifacts
 *.tgz
+
+# Python
+__pycache__/
+*.pyc
