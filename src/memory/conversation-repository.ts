@@ -307,7 +307,17 @@ export class ConversationRepository {
     conversationId: string,
     limit = 20,
   ): ChatMessage[] {
-    return this.getRecentMessages(conversationId, limit).map(toChatMessage);
+    const messages = this.getRecentMessages(conversationId, limit).map(
+      toChatMessage,
+    );
+    // A window can begin with a tool result whose originating tool_call was
+    // cut off. Providers reject that whole request, so drop leading orphans
+    // until the history starts on something valid.
+    let start = 0;
+    while (start < messages.length && messages[start]?.role === 'tool') {
+      start += 1;
+    }
+    return messages.slice(start);
   }
 
   /** Returns the conversation with the most recent activity, if one exists. */

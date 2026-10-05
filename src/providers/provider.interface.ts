@@ -2,6 +2,8 @@
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 /** A structured function call requested by a model. */
+import type { StreamEvent } from './stream-events.js';
+
 export interface ToolCall {
   /** Provider-generated call identifier. */
   id: string;
@@ -72,6 +74,13 @@ export interface CompletionUsage {
 export interface ChatCompletionResponse {
   /** Assistant text returned by the model. */
   content: string;
+  /**
+   * Why the reply was empty, when it was.
+   *
+   * Empty turns are otherwise indistinguishable from the assistant choosing
+   * to say nothing, which makes provider quirks very hard to diagnose.
+   */
+  emptyReason?: string | undefined;
   /** Model identifier reported by the provider. */
   model: string;
   /** Token usage, when reported by the provider. */
@@ -94,6 +103,17 @@ export interface LLMProvider {
 
   /** Requests a chat completion and yields assistant text incrementally. */
   streamChatCompletion?(request: ChatCompletionRequest): AsyncIterable<string>;
+
+  /**
+   * Streams a whole turn as structured events.
+   *
+   * Unlike `streamChatCompletion`, this supports tools: narration arrives as
+   * `text` events in real time, while tool-call fragments are buffered and
+   * surfaced only as complete `tool_calls` events. A provider that cannot
+   * stream tools leaves this undefined and callers fall back to
+   * `chatCompletion`.
+   */
+  streamChatTurn?(request: ChatCompletionRequest): AsyncIterable<StreamEvent>;
 }
 
 /** Result returned by a tool executor to the provider loop. */

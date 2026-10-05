@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import type { LLMProvider } from '../providers/provider.interface.js';
+import type {
+  ChatCompletionResponse,
+  LLMProvider,
+} from '../providers/provider.interface.js';
+import { MemoryOperationError } from '../errors.js';
 import type { FactsRepository, MemoryFact } from './facts-repository.js';
 
 const extractedFactsSchema = z.object({
@@ -87,7 +91,9 @@ export class FactExtractor {
     this.#provider = options.provider;
     this.#factsRepository = options.factsRepository;
     this.#model = options.model;
-    this.#maxTokens = options.maxTokens ?? 256;
+    // Reasoning models spend the first part of the budget thinking, so a
+    // small cap truncates before any JSON is emitted.
+    this.#maxTokens = options.maxTokens ?? 1_200;
   }
 
   /** Extracts and stores only new, durable user facts from one exchange. */
@@ -96,30 +102,64 @@ export class FactExtractor {
   ): Promise<MemoryFact[]> {
     if (exchange.userContent.trim() === '') return [];
 
-    const response = await this.#provider.chatCompletion({
-      model: this.#model,
-      maxTokens: this.#maxTokens,
-      temperature: 0,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Extract durable facts about the user from the exchange. ' +
-            'Only store facts explicitly stated by the user, such as identity, ' +
-            'stable preferences, ongoing projects, or corrections. ' +
-            'Do not store opinions, one-off task details, assistant statements, ' +
-            'or guesses. Return JSON only in the form ' +
-            '{"facts":[{"content":"standalone fact","category":"optional tag"}]}. ' +
-            'Return {"facts":[]} when nothing qualifies.',
-        },
-        {
-          role: 'user',
-          content:
-            `User message:\n"""\n${exchange.userContent}\n"""\n\n` +
-            `Assistant response for context:\n"""\n${exchange.assistantContent}\n"""`,
-        },
-      ],
-    });
+    let response: ChatCompletionResponse;
+    try {
+      response = await this.#provider.chatCompletion({
+        model: this.#model,
+        maxTokens: this.#maxTokens,
+        temperature: 0,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Extract durable facts about the user from the exchange. ' +
+              'Only store facts explicitly stated by the user, such as identity, ' +
+              'stable preferences, ongoing projects, or corrections. ' +
+              'Do not store opinions, one-off task details, assistant statements, ' +
+              'or guesses. Return JSON only in the form ' +
+              '{"facts":[{"content":"standalone fact","category":"optional tag"}]}. ' +
+              'Return {"facts":[]} when nothing qualifies.' +
+              ' Output ONLY a JSON object as plain text. Do not call any tools. Do not write anything other than the JSON.',
+          },
+          {
+            role: 'user',
+            content:
+              `User message:\n"""\n${exchange.userContent}\n"""\n\n` +
+              `Assistant response for context:\n"""\n${exchange.assistantContent}\n"""`,
+          },
+        ],
+      });
+    } catch (error) {
+      // Swallowing this made memory look broken with no clue why.
+      throw new MemoryOperationError('Fact extraction request failed.', {
+        cause: error,
+      });
+    }
+
+    // A truncated reply contains no JSON at all. Reasoning models burn the
+    // budget before answering, so retry with more room rather than storing
+    // nothing and losing a fact.
+    if (response.content.trim() === '') {
+      response = await this.#provider.chatCompletion({
+        model: this.#model,
+        maxTokens: this.#maxTokens * 3,
+        temperature: 0,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Extract durable facts about the user from the exchange. ' +
+              'Reply with JSON only: {"facts":[{"content":"...","category":"..."}]}. ' +
+              'Return {"facts":[]} when nothing qualifies. ' +
+              'Output ONLY a JSON object as plain text. Do not call any tools.',
+          },
+          {
+            role: 'user',
+            content: exchange.userContent.slice(0, 800),
+          },
+        ],
+      });
+    }
 
     const extracted = parseFactExtraction(response.content);
     const existing = new Set(

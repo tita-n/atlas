@@ -1,12 +1,15 @@
-import { ToolExecutionError } from '../errors.js';
+import { ProviderResponseError, ToolExecutionError } from '../errors.js';
 import type {
   ChatCompletionResponse,
   ChatMessage,
+  ChatCompletionRequest,
+  CompletionUsage,
   LLMProvider,
   ToolCall,
   ToolDefinition,
   ToolExecutor,
 } from '../providers/provider.interface.js';
+import { NarrationStreamGuard } from './narration-guard.js';
 import type { ConversationRepository } from '../memory/conversation-repository.js';
 
 /** Options controlling requests made by a Conversation instance. */
@@ -104,6 +107,17 @@ export class Conversation {
     }));
   }
 
+  /**
+   * Overrides the system prompt for subsequent turns.
+   *
+   * The assistant session uses this so each turn carries only the memory and
+   * corrections relevant to that turn.
+   */
+  public setSystemPrompt(prompt: string): void {
+    this.#options.systemPrompt = prompt;
+    this.#options.buildSystemPrompt = undefined;
+  }
+
   /** Clears working history without deleting persisted rows. */
   public clear(): void {
     this.#messages.length = 0;
@@ -113,7 +127,17 @@ export class Conversation {
   public async send(
     provider: LLMProvider,
     userContent: string,
-    options: { signal?: AbortSignal } = {},
+    options: {
+      signal?: AbortSignal;
+      /**
+       * Receives narration as it is generated.
+       *
+       * Streaming is best-effort: a provider without streaming support simply
+       * calls this once with the finished text, so a caller never has to care
+       * whether the turn was streamed.
+       */
+      onNarrationDelta?: ((text: string) => void) | undefined;
+    } = {},
   ): Promise<ChatCompletionResponse> {
     const userMessage: ChatMessage = { role: 'user', content: userContent };
     const userMessageId = this.#persistMessage(userMessage);
@@ -121,26 +145,48 @@ export class Conversation {
     const maxIterations = this.#options.maxToolIterations ?? 8;
 
     for (let iteration = 0; iteration <= maxIterations; iteration += 1) {
-      const response = await provider.chatCompletion({
-        messages: this.#requestMessages(),
-        model: this.#options.model,
-        ...(this.#options.maxTokens === undefined
-          ? {}
-          : { maxTokens: this.#options.maxTokens }),
-        ...(this.#options.temperature === undefined
-          ? {}
-          : { temperature: this.#options.temperature }),
-        ...(this.#options.tools === undefined ||
-        this.#options.tools.length === 0
-          ? {}
-          : { tools: [...this.#options.tools] }),
-        ...(this.#options.tools === undefined ||
-        this.#options.tools.length === 0
-          ? {}
-          : { toolChoice: this.#options.toolChoice ?? 'auto' }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      });
+      // One call shape for both paths. Streaming only changes how the reply
+      // is delivered, never the request or the tool orchestration around it.
+      const response = await this.#complete(
+        provider,
+        {
+          messages: this.#requestMessages(),
+          model: this.#options.model,
+          ...(this.#options.maxTokens === undefined
+            ? {}
+            : { maxTokens: this.#options.maxTokens }),
+          ...(this.#options.temperature === undefined
+            ? {}
+            : { temperature: this.#options.temperature }),
+          ...(this.#options.tools === undefined ||
+          this.#options.tools.length === 0
+            ? {}
+            : { tools: [...this.#options.tools] }),
+          ...(this.#options.tools === undefined ||
+          this.#options.tools.length === 0
+            ? {}
+            : { toolChoice: this.#options.toolChoice ?? 'auto' }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        },
+        options,
+      );
       const toolCalls = response.toolCalls ?? [];
+      // An empty turn is a provider failure, not a real message. Persisting
+      // it would replay a blank reply on every resume.
+      if (
+        (response.content ?? '').trim() === '' &&
+        (response.toolCalls ?? []).length === 0
+      ) {
+        throw new ProviderResponseError(
+          this.#options.model,
+          `the provider returned an empty reply${
+            response.emptyReason === undefined
+              ? ''
+              : ` (${response.emptyReason})`
+          }`,
+        );
+      }
+
       const assistantMessage: ChatMessage = {
         role: 'assistant',
         content: response.content,
@@ -199,6 +245,87 @@ export class Conversation {
       maxIterations,
       options.signal,
     );
+  }
+
+  /**
+   * Performs one provider call, streaming narration when that was asked for.
+   *
+   * Falls back to a single non-streaming call whenever live delivery is not
+   * available, so every existing caller keeps working unchanged.
+   */
+  async #complete(
+    provider: LLMProvider,
+    request: ChatCompletionRequest,
+    options: { onNarrationDelta?: ((text: string) => void) | undefined },
+  ): Promise<ChatCompletionResponse> {
+    if (options.onNarrationDelta === undefined) {
+      return provider.chatCompletion(request);
+    }
+    if (provider.streamChatTurn === undefined) {
+      // No streaming support: deliver the finished reply through the same
+      // callback so the caller sees a consistent shape either way.
+      const response = await provider.chatCompletion(request);
+      if ((response.content ?? '') !== '') {
+        options.onNarrationDelta(response.content ?? '');
+      }
+      return response;
+    }
+    return this.#streamTurn(provider, request, options.onNarrationDelta);
+  }
+
+  /**
+   * Consumes a streamed turn and rebuilds the normal completion response.
+   *
+   * Tool calls are only ever seen here as complete calls, which is why the
+   * permission gate downstream fires at exactly the same point it always did:
+   * after a complete call exists, before it runs.
+   */
+  async #streamTurn(
+    provider: LLMProvider,
+    request: ChatCompletionRequest,
+    onNarrationDelta: (text: string) => void,
+  ): Promise<ChatCompletionResponse> {
+    const guard = new NarrationStreamGuard();
+    let content = '';
+    let toolCalls: ToolCall[] = [];
+    let usage: CompletionUsage | undefined;
+    let stopReason: string | undefined;
+    // Bound explicitly: the method is invoked detached from the provider.
+    const streamTurn = provider.streamChatTurn?.bind(provider);
+    // Presence is guaranteed by the caller, which checks before calling this.
+    if (streamTurn === undefined) {
+      throw new Error('streamChatTurn must exist to stream a turn');
+    }
+
+    for await (const event of streamTurn(request)) {
+      if (event.type === 'text') {
+        content += event.text;
+        // Only the guard-approved prefix is shown; a suspected payload is
+        // withheld rather than displayed and retracted later.
+        const safe = guard.push(event.text);
+        if (safe !== '') onNarrationDelta(safe);
+        continue;
+      }
+      if (event.type === 'tool_calls') {
+        toolCalls = [...toolCalls, ...event.toolCalls];
+        continue;
+      }
+      if (event.usage !== undefined) usage = event.usage;
+      if (event.finishReason !== undefined) stopReason = event.finishReason;
+    }
+
+    // Whatever the guard held back is applied at the end of the stream.
+    const tail = guard.flush();
+    if (tail !== '') onNarrationDelta(tail);
+
+    return {
+      content,
+      // Streamed responses carry no model echo; the requested one is correct.
+      model: request.model,
+      ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(usage === undefined ? {} : { usage }),
+      ...(stopReason === undefined ? {} : { stopReason }),
+    };
   }
 
   /**

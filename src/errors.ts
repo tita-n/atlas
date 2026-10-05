@@ -41,6 +41,9 @@ export class MemoryError extends AtlasError {}
 /** Indicates that a conversation or fact operation could not be completed. */
 export class MemoryOperationError extends AtlasError {}
 
+/** Indicates a voice model could not be downloaded, cached, or loaded. */
+export class VoiceModelError extends AtlasError {}
+
 /** Indicates that the configuration file could not be read or written. */
 export class ConfigFileError extends AtlasError {
   public constructor(message: string, options?: ErrorOptions) {

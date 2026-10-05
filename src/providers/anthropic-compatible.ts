@@ -26,6 +26,8 @@ import {
   waitForRetry,
 } from './retry.js';
 import { readSseData } from './sse.js';
+import { AnthropicStreamAssembler } from './stream-events.js';
+import type { StreamEvent } from './stream-events.js';
 
 interface AnthropicToolUse {
   type: 'tool_use';
@@ -57,6 +59,10 @@ const anthropicResponseSchema = z.object({
     })
     .optional(),
 });
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 const anthropicChunkSchema = z
   .object({
@@ -442,5 +448,65 @@ export class AnthropicCompatibleProvider implements LLMProvider {
         yield parsed.data.delta.text;
       }
     }
+  }
+  /**
+   * Streams a full turn, including tool use.
+   *
+   * The event sequence is assembled by {@link AnthropicStreamAssembler}: text
+   * deltas pass through immediately, while `input_json_delta` fragments are
+   * held until the block closes and its arguments parse.
+   */
+  public async *streamChatTurn(
+    request: ChatCompletionRequest,
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const response = await this.#post(
+      this.#requestBody(request, true),
+      request.signal,
+    );
+    if (!response.ok) {
+      throw await providerApiError(response, this.name, this.#apiKey);
+    }
+
+    const assembler = new AnthropicStreamAssembler(this.name);
+    for await (const data of readSseData(response.body, this.name)) {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(data) as unknown;
+      } catch (error) {
+        throw new ProviderResponseError(
+          this.name,
+          'stream contains invalid JSON',
+          { cause: error },
+        );
+      }
+
+      // Error frames are routed through the same redaction as every other
+      // provider error path, and surface before any assembly so a failed
+      // stream is never mistaken for a completed turn.
+      if (isRecord(payload) && payload.type === 'error') {
+        const embedded = embeddedProviderError(
+          { error: isRecord(payload) ? payload.error : undefined },
+          this.#apiKey,
+        );
+        if (embedded !== undefined) {
+          throw embeddedErrorToApiError(embedded, this.name);
+        }
+        throw providerSchemaError(
+          this.name,
+          'stream reported an error event',
+          new z.ZodError([
+            {
+              code: z.ZodIssueCode.custom,
+              path: ['type'],
+              message: 'stream reported an error event',
+            },
+          ]),
+        );
+      }
+
+      for (const event of assembler.push(payload)) yield event;
+    }
+
+    for (const event of assembler.finish()) yield event;
   }
 }

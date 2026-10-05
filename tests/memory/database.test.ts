@@ -26,10 +26,17 @@ describe('openDatabase', () => {
     const database = openDatabase(path);
 
     try {
-      expect(database.getAppliedMigrations()).toEqual([
+      const applied = database.getAppliedMigrations();
+      // The earliest migrations are fixed history; later phases append to this
+      // list, so assert the known prefix and that nothing was skipped.
+      expect(applied.slice(0, 2)).toEqual([
         expect.objectContaining({ version: 1, name: 'initial' }),
         expect.objectContaining({ version: 2, name: 'shell_audit' }),
       ]);
+      expect(applied.map((migration) => migration.version)).toEqual(
+        applied.map((_, index) => index + 1),
+      );
+      expect(applied.length).toBeGreaterThanOrEqual(2);
       expect((await stat(path)).mode & 0o777).toBe(0o600);
     } finally {
       database.close();
@@ -43,9 +50,10 @@ describe('openDatabase', () => {
 
     const second = openDatabase(path);
     try {
-      expect(second.getAppliedMigrations()).toHaveLength(2);
+      const reopened = second.getAppliedMigrations();
+      expect(reopened.length).toBeGreaterThanOrEqual(2);
       expect(
-        second.getAppliedMigrations().map((migration) => migration.version),
+        reopened.slice(0, 2).map((migration) => migration.version),
       ).toEqual([1, 2]);
     } finally {
       second.close();

@@ -144,6 +144,45 @@ export {
   renderHelp,
   type ReplCommand,
 } from './cli/repl-commands.js';
+export {
+  ATLAS_AUDIO,
+  WyomingClient,
+  WyomingReader,
+  WyomingError,
+  audioChunkFrame,
+  encodeWyomingEvent,
+  readWyomingEvent,
+  type WyomingAudioFormat,
+  type WyomingEvent,
+} from './voice/wyoming.js';
+export {
+  VoicePipeline,
+  looksLikeCorrection,
+  type CorrectionSink,
+  type TranscriptSink,
+  type WakeReport,
+} from './voice/voice-pipeline.js';
+export {
+  VoiceprintStore,
+  VoiceprintError,
+  cosineSimilarity,
+  parseVoiceprint,
+  voiceprintFingerprint,
+  type Voiceprint,
+} from './voice/voiceprint-store.js';
+export {
+  loadVoiceConfig,
+  expandUserPath,
+  VOICE_HOST,
+  DEFAULT_PORTS,
+  type VadConfig,
+  type VoiceConfig,
+  type VoiceConfigOverrides,
+} from './config/voice-config.js';
+export {
+  VoiceCorrectionsRepository,
+  type VoiceCorrectionEntry,
+} from './memory/voice-corrections-repository.js';
 export { AuditLog, type AuditEntry } from './audit/audit-log.js';
 export type {
   AuditDecision,

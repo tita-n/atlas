@@ -27,6 +27,8 @@ import {
   waitForRetry,
 } from './retry.js';
 import { readSseData } from './sse.js';
+import { OpenAIStreamAssembler } from './stream-events.js';
+import type { StreamEvent } from './stream-events.js';
 
 const openAIToolCallSchema = z.object({
   id: z.string().min(1),
@@ -45,6 +47,13 @@ const openAIResponseSchema = z.object({
         message: z.object({
           role: z.literal('assistant'),
           content: z.string().nullable().optional(),
+          /**
+           * Reasoning models emit their thinking here. It is accepted so the
+           * rest of the pipeline can see that the model did answer, instead of
+           * silently treating the turn as empty.
+           */
+          reasoning_content: z.string().nullable().optional(),
+          refusal: z.string().nullable().optional(),
           tool_calls: z.array(openAIToolCallSchema).nullable().optional(),
         }),
         finish_reason: z.string().nullable().optional(),
@@ -324,9 +333,22 @@ export class OpenAICompatibleProvider implements LLMProvider {
       );
     }
 
+    const hasContent =
+      typeof choice.message.content === 'string' &&
+      choice.message.content.trim() !== '';
     const responseBody: ChatCompletionResponse = {
       content: choice.message.content ?? '',
       model: data.model,
+      // An empty turn with no tool calls is a provider quirk, not silence.
+      // Recording why stops "Atlas said nothing" from being unexplainable.
+      ...(hasContent || choice.message.tool_calls?.length
+        ? {}
+        : {
+            emptyReason:
+              choice.finish_reason === 'tool_calls'
+                ? 'the model asked for a tool that was not offered'
+                : (choice.message.refusal ?? 'the model returned no content'),
+          }),
     };
 
     if (choice.message.tool_calls?.length) {
@@ -408,5 +430,50 @@ export class OpenAICompatibleProvider implements LLMProvider {
         }
       }
     }
+  }
+  /**
+   * Streams a full turn, including tool calls.
+   *
+   * Unlike `streamChatCompletion`, tools are allowed: tool-call fragments are
+   * assembled and emitted only once complete, so no partial tool content is
+   * ever mistaken for narration.
+   */
+  public async *streamChatTurn(
+    request: ChatCompletionRequest,
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const response = await this.#post(
+      this.#requestBody(request, true),
+      request.signal,
+    );
+    if (!response.ok) {
+      throw await providerApiError(response, this.name, this.#apiKey);
+    }
+
+    const assembler = new OpenAIStreamAssembler(this.name);
+    for await (const data of readSseData(response.body, this.name)) {
+      if (data === '[DONE]') break;
+
+      let payload: unknown;
+      try {
+        payload = JSON.parse(data) as unknown;
+      } catch (error) {
+        throw new ProviderResponseError(
+          this.name,
+          'stream contains invalid JSON',
+          { cause: error },
+        );
+      }
+
+      // A gateway can inject an error frame mid-stream, mid-turn. Checking it
+      // before assembly means a failed stream never looks like a clean finish.
+      const embedded = embeddedProviderError(payload, this.#apiKey);
+      if (embedded !== undefined) {
+        throw embeddedErrorToApiError(embedded, this.name);
+      }
+
+      for (const event of assembler.push(payload)) yield event;
+    }
+
+    for (const event of assembler.finish()) yield event;
   }
 }
