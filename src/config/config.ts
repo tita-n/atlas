@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import {
   ConfigFileError,
   ConfigNotFoundError,
@@ -38,8 +38,7 @@ function isNodeError(error: unknown, code: string): boolean {
 
 function safeValidationIssues(error: ZodError): string[] {
   return error.issues.map((issue) => {
-    const field =
-      issue.path.length === 0 ? 'configuration' : issue.path.join('.');
+    const field = issueField(issue);
 
     switch (field) {
       case 'provider':
@@ -61,6 +60,17 @@ function safeValidationIssues(error: ZodError): string[] {
         return `${field}: is invalid`;
     }
   });
+}
+
+/**
+ * Names the configuration field a Zod issue belongs to.
+ *
+ * `provider` is the only enum in the schema, so a bare enum issue with no path
+ * can only come from parsing the provider field on its own.
+ */
+function issueField(issue: z.ZodIssue): string {
+  if (issue.path.length > 0) return issue.path.join('.');
+  return issue.code === 'invalid_enum_value' ? 'provider' : 'configuration';
 }
 
 function assertValidConfig(value: unknown): AtlasConfig {
@@ -95,6 +105,21 @@ export function resolveConfigPath(options: LoadConfigOptions = {}): string {
   return getDefaultConfigPath(options.homeDirectory);
 }
 
+/**
+ * Parses a numeric environment variable, naming the variable in the failure.
+ *
+ * `Number('')` is `0` and `Number('abc')` is `NaN`, so both would otherwise
+ * surface as a range complaint about a value the user never wrote.
+ */
+function environmentNumber(raw: string, variable: string): number {
+  const value = Number(raw);
+  if (raw.trim() === '' || !Number.isFinite(value)) {
+    throw new ConfigValidationError([`${variable}: must be a number`]);
+  }
+
+  return value;
+}
+
 function environmentOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   const values: Record<string, unknown> = {};
 
@@ -103,10 +128,16 @@ function environmentOverrides(env: NodeJS.ProcessEnv): Record<string, unknown> {
   if (env.ATLAS_BASE_URL !== undefined) values.baseUrl = env.ATLAS_BASE_URL;
   if (env.ATLAS_MODEL !== undefined) values.model = env.ATLAS_MODEL;
   if (env.ATLAS_MAX_TOKENS !== undefined) {
-    values.maxTokens = Number(env.ATLAS_MAX_TOKENS);
+    values.maxTokens = environmentNumber(
+      env.ATLAS_MAX_TOKENS,
+      'ATLAS_MAX_TOKENS',
+    );
   }
   if (env.ATLAS_TEMPERATURE !== undefined) {
-    values.temperature = Number(env.ATLAS_TEMPERATURE);
+    values.temperature = environmentNumber(
+      env.ATLAS_TEMPERATURE,
+      'ATLAS_TEMPERATURE',
+    );
   }
 
   return values;
@@ -163,15 +194,16 @@ export async function loadConfig(
   const configPath = resolveConfigPath(options);
   const env = options.env ?? process.env;
   const fileValues = await readConfigFile(configPath);
+  const environmentValues = environmentOverrides(env);
   const merged: Record<string, unknown> = {
     ...fileValues,
-    ...environmentOverrides(env),
+    ...environmentValues,
     ...(options.overrides ?? {}),
   };
 
   if (
     !hasConfigValues(fileValues) &&
-    !hasConfigValues(environmentOverrides(env)) &&
+    !hasConfigValues(environmentValues) &&
     Object.keys(options.overrides ?? {}).length === 0
   ) {
     throw new ConfigNotFoundError(configPath);
@@ -191,19 +223,21 @@ export async function loadConfig(
   }
 
   const provider: ProviderName = providerResult.data;
-  const hasEnvironmentBaseUrl = env.ATLAS_BASE_URL !== undefined;
-  const hasCliBaseUrl = options.overrides?.baseUrl !== undefined;
   const fileProvider = fileValues.provider;
   const fileBaseUrl = fileValues.baseUrl;
   const providerChanged =
     typeof fileProvider === 'string' &&
     fileProvider !== provider &&
     fileBaseUrl === DEFAULT_BASE_URLS[fileProvider as ProviderName];
+  // An explicit environment or CLI base URL always outranks the provider
+  // default, including when no config file exists at all.
+  const hasExplicitBaseUrl =
+    env.ATLAS_BASE_URL !== undefined ||
+    options.overrides?.baseUrl !== undefined;
 
   if (
-    merged.baseUrl === undefined ||
-    ((providerChanged || !hasConfigValues(fileValues)) && !hasCliBaseUrl) ||
-    (providerChanged && !hasEnvironmentBaseUrl && !hasCliBaseUrl)
+    !hasExplicitBaseUrl &&
+    (merged.baseUrl === undefined || providerChanged)
   ) {
     merged.baseUrl = DEFAULT_BASE_URLS[provider];
   }
