@@ -1263,6 +1263,10 @@ export async function main(argv = process.argv): Promise<void> {
       'only entries at or after this ISO timestamp',
     )
     .option('--limit <number>', 'maximum entries to show', parseAuditLimit);
+  const selfmod = addCommonOptions(program.command('selfmod'))
+    .description('propose, verify, and apply a change to Atlas itself')
+    .argument('<file>', 'JSON file describing the proposed change');
+
   const autonomy = addCommonOptions(program.command('autonomy'))
     .description('show or set how often Atlas asks before acting')
     .option('--level <level>', `set the level: ${AUTONOMY_LEVELS.join(', ')}`)
@@ -1370,6 +1374,12 @@ export async function main(argv = process.argv): Promise<void> {
   history.action(() => {
     runHistory();
   });
+  selfmod.action(async (file: string) => {
+    const { runSelfmodCommand } = await import('./selfmod/cli.js');
+    const exitCode = await runSelfmodCommand({ file, root: process.cwd() });
+    if (exitCode !== 0) process.exitCode = exitCode;
+  });
+
   autonomy.action(async (options: { level?: string; confirm: boolean }) => {
     const home = loadAssistantConfig().homeDirectory;
     await runAutonomy({

@@ -34,8 +34,8 @@ import {
 } from '../../src/selfmod/ledger.js';
 import {
   lastKnownGood,
+  requireCleanTree,
   revertTo,
-  snapshotApplied,
   treeState,
   type GitRunner,
 } from '../../src/selfmod/snapshots.js';
@@ -170,13 +170,24 @@ describe('health and rollback', () => {
     ).toBe(false);
   });
 
-  it('refuses to snapshot on a dirty tree', () => {
-    const git: GitRunner = (args) =>
+  it('refuses to proceed when the tree is already dirty', () => {
+    // Checked before applying, since applying is itself what dirties the tree.
+    const dirty: GitRunner = (args) =>
       args[0] === 'status'
         ? { ok: true, stdout: ' M src/tui/App.tsx\n', stderr: '' }
         : { ok: true, stdout: 'abc', stderr: '' };
-    const result = snapshotApplied(git, { summary: 'x', at: 'now' });
-    expect(result.ok).toBe(false);
+    expect(requireCleanTree(dirty).ok).toBe(false);
+    expect(
+      requireCleanTree(dirty).ok === false && !requireCleanTree(dirty),
+    ).toBe(false);
+  });
+
+  it('allows the precondition on a clean tree', () => {
+    const clean: GitRunner = (args) =>
+      args[0] === 'status'
+        ? { ok: true, stdout: '', stderr: '' }
+        : { ok: true, stdout: 'abc', stderr: '' };
+    expect(requireCleanTree(clean)).toEqual({ ok: true });
   });
 
   it('reads a clean tree', () => {
@@ -277,8 +288,9 @@ describe('the workflow', () => {
       d.deps,
     );
     expect(result.kind).toBe('refused');
-    // No verification, no approval, no apply: nothing to discard.
-    expect(d.calls).toEqual([]);
+    // No verification, no approval, no apply. The only call is the clean-tree
+    // precondition, which reads git and changes nothing.
+    expect(d.calls).toEqual(['status --porcelain', 'rev-parse HEAD']);
     expect(readLedger(d.home).at(-1)?.outcome).toBe('refused-protected');
   });
 

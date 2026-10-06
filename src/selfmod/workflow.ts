@@ -29,6 +29,7 @@ import {
 import { appendLedger, type LedgerEntry } from './ledger.js';
 import {
   lastKnownGood,
+  requireCleanTree,
   revertTo,
   snapshotApplied,
   type GitRunner,
@@ -55,7 +56,26 @@ export type ApplyOutcome =
       readonly rolledBack: boolean;
     };
 
+/**
+ * Audit sink for one self-modification attempt.
+ *
+ * The ledger records the detail; this is what makes attempts visible in the
+ * same reviewable history as every other action, rather than only in a file
+ * Atlas-specific reader has to know to open.
+ */
+export type SelfmodAudit = (entry: {
+  outcome: string;
+  summary: string;
+  paths: readonly string[];
+  explanation: string;
+  detail?: string | undefined;
+  sha?: string | undefined;
+  rolledBack?: boolean | undefined;
+}) => void;
+
 export interface WorkflowDeps {
+  /** Writes an audit_log row tagged event_kind='self-modification'. */
+  readonly audit?: SelfmodAudit | undefined;
   readonly atlasHome: string;
   readonly git: GitRunner;
   /** Runs the verification suite against a scratch copy of the change. */
@@ -93,12 +113,33 @@ export async function runSelfModification(
   };
   const paths = change.writes.map((write) => write.path);
 
+  // 0. The tree must be clean before anything is applied, so the snapshot can
+  //    isolate this change from any unrelated work.
+  const clean = requireCleanTree(deps.git);
+  if (!clean.ok) {
+    log({
+      outcome: 'snapshot-failed',
+      summary: change.summary,
+      paths,
+      explanation: change.explanation,
+      detail: clean.reason,
+    });
+    return { kind: 'snapshot-failed', reason: clean.reason };
+  }
+
   // 1. Boundary first: a protected path is refused before any work happens, so
   // there is nothing to discard and nothing that could have run.
   const validation = validateChange(change);
   if (!validation.acceptable) {
     const reason = refusalReason(validation);
     log({
+      outcome: 'refused-protected',
+      summary: change.summary,
+      paths,
+      explanation: change.explanation,
+      detail: reason,
+    });
+    deps.audit?.({
       outcome: 'refused-protected',
       summary: change.summary,
       paths,
@@ -180,6 +221,13 @@ export async function runSelfModification(
       explanation: change.explanation,
       sha: snap.snapshot.sha,
     });
+    deps.audit?.({
+      outcome: 'applied',
+      summary: change.summary,
+      paths,
+      explanation: change.explanation,
+      sha: snap.snapshot.sha,
+    });
     return {
       kind: 'applied',
       snapshot: snap.snapshot,
@@ -202,6 +250,15 @@ export async function runSelfModification(
   }
 
   log({
+    outcome: 'rolled-back',
+    summary: change.summary,
+    paths,
+    explanation: change.explanation,
+    sha: snap.snapshot.sha,
+    rolledBack,
+    detail,
+  });
+  deps.audit?.({
     outcome: 'rolled-back',
     summary: change.summary,
     paths,

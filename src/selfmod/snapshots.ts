@@ -44,24 +44,15 @@ export function treeState(git: GitRunner): TreeState {
 /**
  * Commits the applied change on its own branch.
  *
- * Refuses to run on a dirty tree. Committing unrelated work into a safety
- * snapshot would make reverting it destructive, so the precondition is
- * enforced rather than warned about.
+ * Assumes the working tree was clean before the change was applied - that is
+ * checked up front by {@link requireCleanTree} as a precondition. Re-checking
+ * here would fail on the change itself, since applying it is what makes the
+ * tree dirty.
  */
 export function snapshotApplied(
   git: GitRunner,
   input: { summary: string; at: string },
 ): { ok: true; snapshot: Snapshot } | { ok: false; reason: string } {
-  const state = treeState(git);
-  if (!state.clean) {
-    return {
-      ok: false,
-      reason:
-        'The working tree has uncommitted changes. Atlas will not snapshot a ' +
-        'self-modification on top of unrelated work, because the snapshot ' +
-        'could not then be reverted on its own. Commit or discard them first.',
-    };
-  }
   const branch = `selfmod/${Date.now()}`;
   const checkout = git(['checkout', '-b', branch]);
   if (!checkout.ok) return { ok: false, reason: checkout.stderr.trim() };
@@ -107,6 +98,26 @@ export function revertTo(
     };
   }
   return { ok: true };
+}
+
+/**
+ * Precondition: the tree must be clean before a change is applied.
+ *
+ * Enforced here rather than at snapshot time, because applying the change is
+ * itself what dirties the tree, and because bundling unrelated work into a
+ * safety snapshot would make reverting it destructive.
+ */
+export function requireCleanTree(
+  git: GitRunner,
+): { ok: true } | { ok: false; reason: string } {
+  if (treeState(git).clean) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      'The working tree has uncommitted changes. Atlas will not apply a ' +
+      'self-modification on top of unrelated work, because the snapshot could ' +
+      'not then be reverted on its own. Commit or discard them first.',
+  };
 }
 
 /** The last snapshot recorded as healthy, which rollback should target. */
