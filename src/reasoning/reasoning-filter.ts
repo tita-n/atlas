@@ -35,8 +35,48 @@ export const LEADING_HOLD_CHARS = 128;
 export const OPEN_TAG = '<think>';
 export const CLOSE_TAG = '</think>';
 
-/** Longest prefix of either tag that could still be completed. */
-const MAX_TAG_PREFIX = OPEN_TAG.length;
+/**
+ * Tags are matched case-insensitively.
+ *
+ * Reasoners are not consistent about casing, and `<THINK>trace</THINK>` is a
+ * reasoning block whether or not it is spelled the way the canonical tag is.
+ * Matching exactly would hand the whole block to the user. Whitespace just
+ * before the bracket is tolerated for the same reason. Matching is still
+ * anchored: `<thinking>` remains ordinary text, because nothing may follow the
+ * tag name.
+ */
+const OPEN_TAG_PATTERN = /<think\s*>/gi;
+const CLOSE_TAG_PATTERN = /<\/think\s*>/gi;
+
+/**
+ * Longest prefix of either tag that could still be completed.
+ *
+ * One past the tag length, because the trailing whitespace of `<think ` is
+ * still part of an unfinished tag rather than content.
+ */
+const MAX_TAG_PREFIX = OPEN_TAG.length + 1;
+
+/** Case-folded tags, for prefix comparison of a partial tag. */
+const OPEN_TAG_FOLDED = OPEN_TAG.toUpperCase();
+const CLOSE_TAG_FOLDED = CLOSE_TAG.toUpperCase();
+
+/** A located tag: where it starts and how many characters it spans. */
+interface TagMatch {
+  readonly index: number;
+  readonly length: number;
+}
+
+/** Stand-in for a tag that is not present: sorts after every real match. */
+const NO_TAG: TagMatch = { index: Infinity, length: 0 };
+
+/** First tag match at or after `from`, or null. */
+function findTag(pattern: RegExp, text: string, from: number): TagMatch | null {
+  pattern.lastIndex = from;
+  const match = pattern.exec(text);
+  return match === null
+    ? null
+    : { index: match.index, length: match[0].length };
+}
 
 /**
  * Whether the buffered opening reads like an answer rather than a monologue.
@@ -60,7 +100,17 @@ function partialTagLength(text: string): number {
     length -= 1
   ) {
     const tail = text.slice(text.length - length);
-    if (OPEN_TAG.startsWith(tail) || CLOSE_TAG.startsWith(tail)) return length;
+    // An unfinished tag may still be waiting for its bracket, so compare the
+    // part before any trailing whitespace.
+    const stem = tail.replace(/\s+$/, '');
+    if (stem === '') continue;
+    const folded = stem.toUpperCase();
+    if (
+      OPEN_TAG_FOLDED.startsWith(folded) ||
+      CLOSE_TAG_FOLDED.startsWith(folded)
+    ) {
+      return length;
+    }
   }
   return 0;
 }
@@ -88,8 +138,6 @@ export class ReasoningFilter {
   #sawBareCloser = false;
   /** Whether narration has been handed to the caller. */
   #released = false;
-  /** Narration produced during the leading hold; still retractable. */
-  #leadingHeld = '';
 
   /** Whether the stream is currently inside an opening-tagged block. */
   public get insideReasoning(): boolean {
@@ -131,16 +179,7 @@ export class ReasoningFilter {
    * a reply.
    */
   public finish(): string {
-    const out = this.#drain(true);
-    // Anything still inside the opening hold is ordinary narration now that
-    // the stream has ended without a bare closer.
-    if (this.#leadingHeld !== '') {
-      const held = this.#leadingHeld;
-      this.#leadingHeld = '';
-      this.#released = true;
-      return out + held;
-    }
-    return out;
+    return this.#drain(true);
   }
 
   /** Whether any real answer content was ever produced. */
@@ -155,8 +194,8 @@ export class ReasoningFilter {
 
     while (index < this.#held.length) {
       if (this.#inside) {
-        const close = this.#held.indexOf(CLOSE_TAG, index);
-        if (close === -1) {
+        const close = findTag(CLOSE_TAG_PATTERN, this.#held, index);
+        if (close === null) {
           // Everything left is reasoning, except a trailing partial closer that
           // a later chunk may still complete. Consuming that tail as reasoning
           // would swallow the closer and leak the answer that follows it.
@@ -167,17 +206,17 @@ export class ReasoningFilter {
           index = this.#held.length;
           continue;
         }
-        this.#reasoning += this.#held.slice(index, close);
-        this.#held = this.#held.slice(close + CLOSE_TAG.length);
+        this.#reasoning += this.#held.slice(index, close.index);
+        this.#held = this.#held.slice(close.index + close.length);
         this.#inside = false;
         index = 0;
         continue;
       }
 
-      const open = this.#held.indexOf(OPEN_TAG, index);
-      const close = this.#held.indexOf(CLOSE_TAG, index);
-      const nextOpen = open === -1 ? Infinity : open;
-      const nextClose = close === -1 ? Infinity : close;
+      const open = findTag(OPEN_TAG_PATTERN, this.#held, index) ?? NO_TAG;
+      const close = findTag(CLOSE_TAG_PATTERN, this.#held, index) ?? NO_TAG;
+      const nextOpen = open.index;
+      const nextClose = close.index;
 
       if (nextOpen === Infinity && nextClose === Infinity) {
         // Hold the opening of the response: a bare closer may still arrive and
@@ -194,7 +233,6 @@ export class ReasoningFilter {
           // Past the bound: this is ordinary narration, so release it and stop
           // treating later text as retractable.
           this.#released = true;
-          this.#leadingHeld = '';
           narration += this.#held;
           if (this.#held.trim() !== '') this.#sawAnswer = true;
           this.#held = '';
@@ -212,15 +250,13 @@ export class ReasoningFilter {
       }
 
       if (nextClose < nextOpen) {
-        // A bare closer with no opener: everything before it was reasoning,
-        // including anything held back during the leading hold.
-        if (this.#released) {
-          this.#reasoning += this.#leadingHeld;
-          this.#leadingHeld = '';
-        } else {
-          this.#reasoning += this.#held.slice(index, close);
-        }
-        this.#held = this.#held.slice(close + CLOSE_TAG.length);
+        // A bare closer with no opener: everything before it was reasoning.
+        // Text already released by an earlier delta cannot be retracted, so it
+        // stays narration; whatever is still buffered is captured here rather
+        // than dropped, or the answer between two stray closers would vanish
+        // from both narration and reasoning.
+        this.#reasoning += this.#held.slice(index, close.index);
+        this.#held = this.#held.slice(close.index + close.length);
         this.#sawBareCloser = true;
         this.#sawAnswer = false;
         index = 0;
@@ -228,11 +264,11 @@ export class ReasoningFilter {
       }
 
       // An opening tag: text before it is the answer so far.
-      const before = this.#held.slice(index, open);
+      const before = this.#held.slice(index, open.index);
       narration += before;
       if (before.trim() !== '') this.#sawAnswer = true;
       this.#released = true;
-      this.#held = this.#held.slice(open + OPEN_TAG.length);
+      this.#held = this.#held.slice(open.index + open.length);
       this.#inside = true;
       index = 0;
     }
