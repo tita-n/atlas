@@ -32,6 +32,22 @@ export interface AssistantConfig {
   readonly textConfirmMode: TextConfirmMode;
   /** Whether the one-time voice-downgrade notice has been shown. */
   readonly showTextConfirmNotice: boolean;
+
+  /**
+   * Complexity above which Atlas adds a brief planning beat.
+   *
+   * Shared with the fidelity check so "when do we add ceremony" is one
+   * decision rather than two that drift apart.
+   */
+  readonly complexityThreshold: number;
+
+  /**
+   * Whether completion claims are checked against what actually happened.
+   *
+   * On by default. Turning it off removes the only guard against reporting
+   * work that was never done.
+   */
+  readonly verifyCompletionClaims: boolean;
 }
 
 const DEFAULTS = {
@@ -41,6 +57,7 @@ const DEFAULTS = {
   historyLimit: 30,
   maxToolIterations: 8,
   showExecutionDetail: true,
+  complexityThreshold: 3,
 } as const;
 
 /** File that records the one-time text-mode downgrade notice. */
@@ -58,6 +75,8 @@ export interface AssistantConfigOverrides {
   readonly memoryLimit?: number | undefined;
   readonly showExecutionDetail?: boolean | undefined;
   readonly textConfirmMode?: TextConfirmMode | undefined;
+  readonly complexityThreshold?: number | undefined;
+  readonly verifyCompletionClaims?: boolean | undefined;
 }
 
 /** Builds the assistant configuration, layering overrides over environment. */
@@ -103,5 +122,10 @@ export function loadAssistantConfig(
       ),
     textConfirmMode: rawMode,
     showTextConfirmNotice: true,
+    complexityThreshold:
+      overrides.complexityThreshold ?? DEFAULTS.complexityThreshold,
+    // On by default: this is the guard against reporting unfinished work as
+    // finished, so it is opt-out rather than opt-in.
+    verifyCompletionClaims: overrides.verifyCompletionClaims ?? true,
   };
 }

@@ -38,6 +38,13 @@ import {
 } from './narration.js';
 import { loadPersonality, defaultPersonalityPath } from './personality.js';
 import { buildTurnPrompt } from './system-prompt.js';
+import {
+  annotateIfUnverified,
+  buildReport,
+  extractClaims,
+  type Transcript,
+} from '../integrity/completion-claims.js';
+import { planningNudge } from '../integrity/plan-first.js';
 
 /** One executed tool call, as a front-end needs it to render a tool block. */
 export interface TurnToolCall {
@@ -324,6 +331,25 @@ export class AssistantSession {
     return this.#runTurn(text, onNarration);
   }
 
+  /**
+   * What this turn actually did, as recorded by the tools rather than narrated.
+   *
+   * Read from the ledger rather than from the conversation, so the check is
+   * independent of the message being checked.
+   */
+  #turnTranscript(): Transcript {
+    const commands = this.ledger.records.map((record) => record.command);
+    return {
+      commands,
+      // The ledger records whether each command succeeded, which is what makes
+      // a "tests pass" claim checkable rather than assumed.
+      outcomes: this.ledger.records.map((record) => ({
+        command: record.command,
+        ok: record.ok,
+      })),
+    };
+  }
+
   async #runTurn(
     text: string,
     onNarration: ((delta: string) => void) | undefined,
@@ -345,12 +371,19 @@ export class AssistantSession {
     const context = this.selectContext(message);
     this.lastContext = context;
     // Each turn carries only the memory and corrections relevant to it.
+    // A brief planning beat for non-trivial work only. Kept out of the way of
+    // short questions, where it would be pure overhead.
+    const nudge = planningNudge(
+      message,
+      this.#options.config.complexityThreshold,
+    );
     this.#options.conversation.setSystemPrompt(
       buildTurnPrompt({
         personality: this.personality,
         corrections: context.corrections,
         facts: context.memories,
         availableTools: this.#availableTools,
+        ...(nudge === undefined ? {} : { planningNote: nudge }),
       }),
     );
 
@@ -361,7 +394,17 @@ export class AssistantSession {
     );
 
     const raw = response.content ?? '';
-    const narration = stripExecutionLeakage(raw);
+    let narration = stripExecutionLeakage(raw);
+    // Completion gate. Claims are checked against what this turn actually did,
+    // not against what the model says about it - acting and checking are
+    // separate steps, otherwise a returned value reads as proof of an effect.
+    if (this.#options.config.verifyCompletionClaims) {
+      const report = buildReport({
+        claims: extractClaims(narration),
+        transcript: this.#turnTranscript(),
+      });
+      narration = annotateIfUnverified(narration, report);
+    }
     return {
       narration,
       detail: this.#options.config.showExecutionDetail

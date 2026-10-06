@@ -13,6 +13,8 @@ export interface SystemPromptInput {
   readonly corrections?: readonly string[];
   /** Durable facts relevant to this turn. */
   readonly facts?: readonly string[];
+  /** Brief planning instruction for non-trivial work; omitted otherwise. */
+  readonly planningNote?: string | undefined;
   /** Instructions for the narration / execution boundary. */
   readonly narrationRule?: string;
   /** Names of the tools actually available this turn. */
@@ -72,6 +74,10 @@ export function buildTurnPrompt(input: SystemPromptInput): string {
   parts.push(toolsSection(input.availableTools ?? []));
   parts.push(section('Corrections you must follow', input.corrections ?? []));
   parts.push(section('Known facts about the user', input.facts ?? []));
+  // Present only for non-trivial turns, so short questions are unaffected.
+  if (input.planningNote !== undefined && input.planningNote.trim() !== '') {
+    parts.push(input.planningNote);
+  }
   return parts
     .filter((part) => part.trim() !== '')
     .join('\n')
