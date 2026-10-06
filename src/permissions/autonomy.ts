@@ -19,6 +19,7 @@
  * of `unattended` cannot switch it off.
  */
 
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -128,6 +129,38 @@ export async function loadAutonomy(
     }
   } catch {
     // Absent or corrupt: the safe default applies.
+  }
+  return { level: DEFAULT_AUTONOMY_LEVEL, changedAt: '' };
+}
+
+/**
+ * Reads the level synchronously, for the per-command decision path.
+ *
+ * The gate must see a level change immediately rather than at next startup:
+ * someone who lowers it in another terminal, or via /autonomy in the same
+ * session, is expecting it to take effect now. A cached value read once at
+ * construction silently ignored the change and kept prompting, which reads as
+ * "the setting does nothing". Fails safe on any problem, like the async path.
+ */
+export function readAutonomySync(atlasHome: string): AutonomySettings {
+  try {
+    const parsed: unknown = JSON.parse(
+      readFileSync(settingsPath(atlasHome), 'utf8'),
+    );
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'level' in parsed &&
+      isAutonomyLevel(parsed.level)
+    ) {
+      const changedAt = (parsed as { changedAt?: unknown }).changedAt;
+      return {
+        level: parsed.level,
+        changedAt: typeof changedAt === 'string' ? changedAt : '',
+      };
+    }
+  } catch {
+    // Absent or unreadable: the safe default applies.
   }
   return { level: DEFAULT_AUTONOMY_LEVEL, changedAt: '' };
 }

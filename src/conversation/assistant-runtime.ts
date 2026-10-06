@@ -25,7 +25,7 @@ import { sudoersRuleExists } from '../permissions/sudoers-setup.js';
 import { PermissionGrantStore } from '../permissions/grant-store.js';
 import { RiskClassifier } from '../permissions/risk-classifier.js';
 import { ConfirmationFlow } from '../permissions/confirmation-flow.js';
-import { hardFloorVerdict, loadAutonomy } from '../permissions/autonomy.js';
+import { hardFloorVerdict, readAutonomySync } from '../permissions/autonomy.js';
 import type { TextConfirmationResult } from '../permissions/confirmation-flow.js';
 import { createProvider } from '../providers/provider-factory.js';
 import type { LLMProvider, ToolCall } from '../providers/provider.interface.js';
@@ -270,7 +270,6 @@ export async function createAssistantRuntime(
       permissionConfig.confirmationPhrase === ''
         ? 'ATLAS CONFIRM'
         : permissionConfig.confirmationPhrase;
-    const autonomy = await loadAutonomy(assistantConfig.homeDirectory);
     const home = process.env.HOME;
 
     const confirmation = new ConfirmationFlow({
@@ -279,7 +278,11 @@ export async function createAssistantRuntime(
       // Unrecoverable actions and edits to Atlas's own safety configuration
       // always stop for a human, whatever the configured level says.
       hardFloor: (command) => hardFloorVerdict(command, { home }).applies,
-      autonomy: { level: autonomy.level },
+      // Read at decision time so lowering the level takes effect without a
+      // restart. Reading it once at startup made the setting look inert.
+      autonomy: () => ({
+        level: readAutonomySync(assistantConfig.homeDirectory).level,
+      }),
       phrase: confirmationPhrase,
       confirmText: async (): Promise<TextConfirmationResult> => {
         if (assistantConfig.textConfirmMode === 'block') return 'deny';
@@ -307,8 +310,9 @@ export async function createAssistantRuntime(
           ? 'hard-block'
           : 'text-safe-word',
       // Every audit row records the level in force, so an unattended run is
-      // distinguishable in review from a supervised one.
-      autonomy: () => autonomy.level,
+      // distinguishable in review from a supervised one. Also read at write
+      // time, so a row is stamped with the level that actually applied.
+      autonomy: () => readAutonomySync(assistantConfig.homeDirectory).level,
       // Dry-run reuses the same permission-checked execution path, so a
       // preview cannot become a way around the classifier.
       dryRun: async (command: string): Promise<string> => {

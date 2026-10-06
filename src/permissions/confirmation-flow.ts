@@ -60,10 +60,10 @@ export interface ConfirmationFlowOptions {
    * The hard floor is checked first and cannot be influenced by this.
    */
   autonomy?:
-    | {
+    | (() => {
         readonly level: AutonomyLevel;
         readonly scopedCategories?: readonly string[] | undefined;
-      }
+      })
     | undefined;
 
   /** Existing provider used only to explain commands. */
@@ -204,6 +204,9 @@ export class ConfirmationFlow {
       };
     }
 
+    // Read at decision time, not at construction: a level changed while this
+    // session is running must take effect immediately.
+    const currentAutonomy = this.#autonomy?.();
     // Danger is decided by the classifier; this only decides whether a person is
     // asked. The hard floor has already had its say above.
     if (assessment.tier === 3) {
@@ -220,15 +223,15 @@ export class ConfirmationFlow {
     if (
       !assessment.requiresConfirmation ||
       !shouldAsk({
-        level: this.#autonomy?.level ?? 'confirm-everything',
+        level: currentAutonomy?.level ?? 'confirm-everything',
         tier: assessment.tier,
         command,
         ...(assessment.category === undefined
           ? {}
           : { category: assessment.category }),
-        ...(this.#autonomy?.scopedCategories === undefined
+        ...(currentAutonomy?.scopedCategories === undefined
           ? {}
-          : { scopedCategories: this.#autonomy.scopedCategories }),
+          : { scopedCategories: currentAutonomy.scopedCategories }),
       })
     ) {
       return {

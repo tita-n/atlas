@@ -24,7 +24,11 @@ import {
   HARD_DENY_RULES,
 } from '../../src/permissions/default-rules.js';
 import type { AutonomyLevel } from '../../src/permissions/autonomy.js';
-import { hardFloorVerdict } from '../../src/permissions/autonomy.js';
+import {
+  hardFloorVerdict,
+  readAutonomySync,
+  saveAutonomy,
+} from '../../src/permissions/autonomy.js';
 import { openDatabase } from '../../src/memory/database.js';
 import { ShellSession } from '../../src/shell/shell-session.js';
 import { ShellTool } from '../../src/shell/shell-tool.js';
@@ -63,12 +67,12 @@ function harness(options: {
     model: 'stub',
     phrase: 'ATLAS CONFIRM',
     hardFloor: (command) => hardFloorVerdict(command, { home: HOME }).applies,
-    autonomy: {
+    autonomy: () => ({
       level: options.level,
       ...(options.scopedCategories === undefined
         ? {}
         : { scopedCategories: options.scopedCategories }),
-    },
+    }),
     confirmText: () => {
       prompts += 1;
       return Promise.resolve(approve);
@@ -112,6 +116,75 @@ async function run(
   const rows = h.audit.list({ limit: 1 });
   return { asked, entry: rows[0] };
 }
+
+describe('autonomy changes take effect without a restart', () => {
+  // Regression: the level was read once when the runtime was constructed, so
+  // lowering it - including via /autonomy in the same session - had no effect
+  // on the running process. From the user's side that reads as "the setting
+  // does nothing".
+  it('picks up a level changed while the session is running', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'atlas-hot-'));
+    const database = openDatabase(join(home, 'atlas.db'));
+    const audit = new AuditLog(database);
+    const session = new ShellSession();
+    session.restart();
+    const settingsPath = join(home, 'autonomy.json');
+
+    let prompts = 0;
+    const confirmation = new ConfirmationFlow({
+      provider: {
+        name: 'stub',
+        chatCompletion: () => Promise.resolve({ content: '', model: 'stub' }),
+      },
+      model: 'stub',
+      phrase: 'ATLAS CONFIRM',
+      hardFloor: (command) => hardFloorVerdict(command, { home: HOME }).applies,
+      // The live shape: read the setting at decision time.
+      autonomy: () => ({ level: readAutonomySync(home).level }),
+      confirmText: () => {
+        prompts += 1;
+        return Promise.resolve(true);
+      },
+      wait: () => Promise.resolve(),
+    });
+    const tool = new ShellTool({
+      session,
+      classifier: new RiskClassifier({
+        userRules: [...HARD_DENY_RULES, ...DEFAULT_PERMISSION_RULES],
+        sudoWhitelistInstalled: false,
+      }),
+      confirmation,
+      auditLog: audit,
+      name: 'shell',
+      autonomy: () => readAutonomySync(home).level,
+    });
+
+    const ask = async (): Promise<boolean> => {
+      const before = prompts;
+      await tool.execute({
+        id: '1',
+        name: 'shell',
+        arguments: { command: 'touch /tmp/atlas-hot-probe' },
+      });
+      return prompts > before;
+    };
+
+    try {
+      await saveAutonomy(home, 'confirm-everything');
+      expect(await ask()).toBe(true);
+
+      await saveAutonomy(home, 'unattended');
+      expect(await ask()).toBe(false);
+
+      await saveAutonomy(home, 'confirm-everything');
+      expect(await ask()).toBe(true);
+      expect(settingsPath).toContain('autonomy.json');
+    } finally {
+      session.close();
+      database.close();
+    }
+  });
+});
 
 describe('autonomy wiring, end to end', () => {
   it('asks for everything at the default level', async () => {
@@ -273,7 +346,7 @@ describe('autonomy wiring, end to end', () => {
           phrase: 'ATLAS CONFIRM',
           hardFloor: (command) =>
             hardFloorVerdict(command, { home: HOME }).applies,
-          autonomy: { level },
+          autonomy: () => ({ level }),
           confirmText: () => Promise.resolve(true),
           wait: () => Promise.resolve(),
         }),
