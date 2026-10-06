@@ -13,6 +13,13 @@
 export interface Snapshot {
   /** Commit sha of the applied change. */
   readonly sha: string;
+  /**
+   * Commit sha from *before* the change was applied.
+   *
+   * This is what actually undoes it. Resetting to `sha` restores the state
+   * that already contains the change, so it reverts nothing.
+   */
+  readonly preSha: string;
   /** Branch the change is committed on. */
   readonly branch: string;
   /** When the snapshot was taken. */
@@ -53,6 +60,7 @@ export function snapshotApplied(
   git: GitRunner,
   input: { summary: string; at: string },
 ): { ok: true; snapshot: Snapshot } | { ok: false; reason: string } {
+  const preSha = treeState(git).head;
   const branch = `selfmod/${Date.now()}`;
   const checkout = git(['checkout', '-b', branch]);
   if (!checkout.ok) return { ok: false, reason: checkout.stderr.trim() };
@@ -65,6 +73,7 @@ export function snapshotApplied(
     ok: true,
     snapshot: {
       sha: sha.ok ? sha.stdout.trim() : '',
+      preSha,
       branch,
       at: input.at,
       summary: input.summary,

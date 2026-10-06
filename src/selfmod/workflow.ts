@@ -236,6 +236,8 @@ export async function runSelfModification(
     };
   }
 
+  // Roll back to the state before the change, not to the snapshot that
+  // contains it.
   const good = lastKnownGood([...(deps.knownGood ?? []), snap.snapshot]);
   let detail = `health check failed at ${health.failedAt ?? 'unknown'}`;
   let rolledBack = false;

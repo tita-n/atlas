@@ -186,7 +186,9 @@ export async function runSelfmodCommand(
         `Applied and healthy. Snapshot ${outcome.snapshot.sha} on ${outcome.snapshot.branch}.`,
       );
       console.log('Revert it on its own with:');
-      console.log(`  git reset --hard ${outcome.snapshot.sha}`);
+      // The pre-change commit, not the snapshot: resetting to the snapshot
+      // restores the tree that already contains the change.
+      console.log(`  git reset --hard ${outcome.snapshot.preSha}`);
       return 0;
     case 'refused':
       console.error(outcome.reason);

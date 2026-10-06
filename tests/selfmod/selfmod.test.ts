@@ -35,6 +35,7 @@ import {
 import {
   lastKnownGood,
   requireCleanTree,
+  snapshotApplied,
   revertTo,
   treeState,
   type GitRunner,
@@ -142,10 +143,34 @@ describe('health and rollback', () => {
 
   it('picks the newest known-good snapshot', () => {
     const good = lastKnownGood([
-      { sha: 'aaa', branch: 'b1', at: '1', summary: 'one' },
-      { sha: 'bbb', branch: 'b2', at: '2', summary: 'two' },
+      { sha: 'aaa', preSha: 'p1', branch: 'b1', at: '1', summary: 'one' },
+      { sha: 'bbb', preSha: 'p2', branch: 'b2', at: '2', summary: 'two' },
     ]);
     expect(good?.sha).toBe('bbb');
+  });
+
+  it('records the pre-change commit, which is what actually undoes it', () => {
+    // Resetting to the snapshot restores the tree that already contains the
+    // change, so it reverts nothing.
+    let revParses = 0;
+    const git: GitRunner = (args) => {
+      if (args[0] === 'status') return { ok: true, stdout: '', stderr: '' };
+      if (args[0] === 'rev-parse') {
+        revParses += 1;
+        // First rev-parse records the pre-change head; later ones read the new
+        // commit the snapshot just created.
+        return {
+          ok: true,
+          stdout: `${revParses === 1 ? 'before-sha' : 'after-sha'}\n`,
+          stderr: '',
+        };
+      }
+      return { ok: true, stdout: '', stderr: '' };
+    };
+    const result = snapshotApplied(git, { summary: 'x', at: 'now' });
+    if (!result.ok) throw new Error('expected a snapshot');
+    expect(result.snapshot.preSha).toBe('before-sha');
+    expect(result.snapshot.sha).toBe('after-sha');
   });
 
   it('restores files before moving the branch pointer', () => {
@@ -154,7 +179,13 @@ describe('health and rollback', () => {
       calls.push([...args]);
       return { ok: true, stdout: '', stderr: '' };
     };
-    revertTo(git, { sha: 'abc', branch: 'selfmod/1', at: 'now', summary: 'x' });
+    revertTo(git, {
+      sha: 'abc',
+      preSha: 'before',
+      branch: 'selfmod/1',
+      at: 'now',
+      summary: 'x',
+    });
     expect(calls[0]).toEqual(['checkout', 'selfmod/1', '--', '.']);
     expect(calls[1]).toEqual(['reset', '--hard', 'abc']);
   });
@@ -166,7 +197,8 @@ describe('health and rollback', () => {
       stderr: 'dirty tree',
     });
     expect(
-      revertTo(git, { sha: 'a', branch: 'b', at: '', summary: '' }).ok,
+      revertTo(git, { sha: 'a', preSha: 'z', branch: 'b', at: '', summary: '' })
+        .ok,
     ).toBe(false);
   });
 
@@ -358,6 +390,7 @@ describe('the workflow', () => {
       knownGood: [
         {
           sha: 'good-sha',
+          preSha: 'older',
           branch: 'selfmod/prev',
           at: 'earlier',
           summary: 'known good',
