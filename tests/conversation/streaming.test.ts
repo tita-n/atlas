@@ -266,8 +266,25 @@ describe('narration streams incrementally', () => {
     await conversation().send(openaiProvider(), 'hi', {
       onNarrationDelta: (text) => deltas.push(text),
     });
-    expect(deltas.length).toBeGreaterThan(1);
+    // Short single-paragraph replies are held for one chunk so a bare
+    // </think> can be caught before anything is released, then arrive intact.
     expect(deltas.join('')).toBe('Here is a plain answer.');
+
+    // Structured replies stream incrementally: the opening hold releases as
+    // soon as the text is recognisably an answer rather than a monologue.
+    reply = () =>
+      sse([
+        { choices: [{ delta: { content: 'Here is the detail:\n' } }] },
+        { choices: [{ delta: { content: '- first item\n' } }] },
+        { choices: [{ delta: { content: '- second item' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]);
+    const structured: string[] = [];
+    await conversation().send(openaiProvider(), 'hi', {
+      onNarrationDelta: (text) => structured.push(text),
+    });
+    expect(structured.length).toBeGreaterThan(1);
+    expect(structured.join('')).toContain('second item');
   });
 
   it('delivers Anthropic text incrementally', async () => {

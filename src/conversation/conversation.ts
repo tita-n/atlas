@@ -10,6 +10,7 @@ import type {
   ToolExecutor,
 } from '../providers/provider.interface.js';
 import { NarrationStreamGuard } from './narration-guard.js';
+import { ReasoningFilter } from '../reasoning/reasoning-filter.js';
 import type { ConversationRepository } from '../memory/conversation-repository.js';
 
 /** Options controlling requests made by a Conversation instance. */
@@ -301,6 +302,9 @@ export class Conversation {
     onNarrationDelta: (text: string) => void,
   ): Promise<ChatCompletionResponse> {
     const guard = new NarrationStreamGuard();
+    // Reasoning is separated live, before the leakage guard ever sees it, so
+    // an inline <think> block cannot reach the display even mid-tag.
+    const reasoningFilter = new ReasoningFilter();
     let content = '';
     let toolCalls: ToolCall[] = [];
     let usage: CompletionUsage | undefined;
@@ -314,11 +318,16 @@ export class Conversation {
 
     for await (const event of streamTurn(request)) {
       if (event.type === 'text') {
-        content += event.text;
-        // Only the guard-approved prefix is shown; a suspected payload is
-        // withheld rather than displayed and retracted later.
-        const safe = guard.push(event.text);
-        if (safe !== '') onNarrationDelta(safe);
+        // Reasoning is separated before the leakage guard ever sees it, so an
+        // inline <think> block cannot reach the display even mid-tag.
+        const narrationText = reasoningFilter.push(event.text);
+        content += narrationText;
+        if (narrationText !== '') {
+          // Only the guard-approved prefix is shown; a suspected payload is
+          // withheld rather than displayed and retracted later.
+          const safe = guard.push(narrationText);
+          if (safe !== '') onNarrationDelta(safe);
+        }
         continue;
       }
       if (event.type === 'tool_calls') {
@@ -329,12 +338,29 @@ export class Conversation {
       if (event.finishReason !== undefined) stopReason = event.finishReason;
     }
 
-    // Whatever the guard held back is applied at the end of the stream.
-    const tail = guard.flush();
+    // End of stream: flush both filters, then reject an answer-less generation
+    // rather than presenting a dangling fragment as a reply.
+    const remaining = reasoningFilter.finish();
+    content += remaining;
+    const tail = guard.push(remaining) + guard.flush();
     if (tail !== '') onNarrationDelta(tail);
+    const reasoning = reasoningFilter.reasoning;
+    // Only when reasoning was actually seen. An empty stream with no reasoning
+    // is the pre-existing empty-reply case and keeps its own error.
+    if (content.trim() === '' && reasoning !== '') {
+      throw new ProviderResponseError(
+        this.#options.model,
+        'the model produced only reasoning and no answer' +
+          (reasoning === ''
+            ? ''
+            : ' (it appears to have run out of output while still reasoning)'),
+      );
+    }
 
     return {
       content,
+      // Reasoning is carried separately and never merged into content.
+      ...(reasoning === '' ? {} : { reasoning }),
       // Streamed responses carry no model echo; the requested one is correct.
       model: request.model,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),

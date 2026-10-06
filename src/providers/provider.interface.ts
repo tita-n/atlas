@@ -81,6 +81,13 @@ export interface ChatCompletionResponse {
    * to say nothing, which makes provider quirks very hard to diagnose.
    */
   emptyReason?: string | undefined;
+  /**
+   * Reasoning the model produced, when it reported any.
+   *
+   * Kept separate from `content` on purpose. Merging it in is how a thinking
+   * model ends up showing its monologue instead of an answer.
+   */
+  reasoning?: string;
   /** Model identifier reported by the provider. */
   model: string;
   /** Token usage, when reported by the provider. */

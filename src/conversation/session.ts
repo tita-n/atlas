@@ -9,7 +9,7 @@ import { access, mkdir, writeFile } from 'node:fs/promises';
 
 import type { AssistantConfig } from '../config/assistant-config.js';
 import { textConfirmNoticePath } from '../config/assistant-config.js';
-import { AtlasError } from '../errors.js';
+import { AtlasError, ProviderResponseError } from '../errors.js';
 import {
   FactsRepository,
   type MemoryFact,
@@ -47,6 +47,7 @@ import {
 } from '../integrity/completion-claims.js';
 import { planningNudge } from '../integrity/plan-first.js';
 import { identitySection } from '../identity/identity-block.js';
+import { splitReasoning } from '../reasoning/reasoning-filter.js';
 
 /** One executed tool call, as a front-end needs it to render a tool block. */
 export interface TurnToolCall {
@@ -424,7 +425,16 @@ export class AssistantSession {
     );
 
     const raw = response.content ?? '';
-    let narration = stripExecutionLeakage(raw);
+    // Reasoning is separated here too, so a non-streamed thinking model gets
+    // the same treatment as a streamed one.
+    const split = splitReasoning(raw);
+    let narration = stripExecutionLeakage(split.narration);
+    if (split.narration.trim() === '' && split.reasoning.trim() !== '') {
+      throw new ProviderResponseError(
+        this.model,
+        'the model produced only reasoning and no answer',
+      );
+    }
     // Completion gate. Claims are checked against what this turn actually did,
     // not against what the model says about it - acting and checking are
     // separate steps, otherwise a returned value reads as proof of an effect.

@@ -368,6 +368,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
       responseBody.stopReason = choice.finish_reason;
     }
+    // Dedicated reasoning channel. Kept out of content; returned as its own
+    // field so it can be shown on request without ever being narration.
+    const reasoning = choice.message.reasoning_content ?? null;
+    if (reasoning !== null && reasoning !== '') {
+      responseBody.reasoning = reasoning;
+    }
 
     return responseBody;
   }
