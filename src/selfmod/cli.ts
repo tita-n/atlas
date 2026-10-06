@@ -23,6 +23,7 @@ import {
 } from './runner.js';
 import { runSelfModification, SELF_MODIFICATION_REASON } from './workflow.js';
 import type { GitRunner } from './snapshots.js';
+import type { ChangeSet } from './change-set.js';
 import { validateChange, refusalReason } from './change-set.js';
 import { requireCleanTree } from './snapshots.js';
 import { readAutonomySync } from '../permissions/autonomy.js';
@@ -58,21 +59,27 @@ export async function runSelfmodCommand(
   options: SelfmodOptions,
 ): Promise<number> {
   const root = options.root ?? process.cwd();
-  const change = await readChangeSet(options.file);
-
-  // Refuse the protected layer before reading further or touching anything.
-  const validation = validateChange(change);
-  if (!validation.acceptable) {
-    console.error(refusalReason(validation));
+  let change: ChangeSet;
+  try {
+    change = await readChangeSet(options.file);
+  } catch (error) {
+    // A missing or malformed change set is a user-facing mistake, not a crash.
+    console.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
 
-  // Check the tree is clean before any work, so the snapshot can isolate this
-  // change from unrelated work and stay revertible on its own.
   const runner = options.git ?? gitRunner;
   const clean = requireCleanTree(runner);
   if (!clean.ok) {
     console.error(clean.reason);
+    return 1;
+  }
+
+  // Refuse the protected layer before reading further or touching anything.
+  // The same order the workflow uses: clean tree first, then the boundary.
+  const validation = validateChange(change);
+  if (!validation.acceptable) {
+    console.error(refusalReason(validation));
     return 1;
   }
 
@@ -130,56 +137,95 @@ export async function runSelfmodCommand(
   const database = openDatabase(join(atlasHome, 'atlas.db'));
   const audit = new AuditLog(database);
 
-  const outcome = await runSelfModification(change, {
-    atlasHome,
-    audit: (entry) => {
-      try {
-        audit.append({
-          timestamp: now(),
-          eventKind: 'self-modification',
-          command: entry.paths.join(', ') || '(no files)',
-          summary: entry.summary,
-          // Self-modification is gated unconditionally, so it is recorded as
-          // approved through the text gate path and never as an auto-allow.
-          gatePath: 'text-safe-word',
-          autonomy: readAutonomySync(atlasHome).level,
-          riskTier: 2,
-          matchedRule: 'selfmod',
-          decision:
-            entry.outcome === 'rejected' ? 'asked-denied' : 'asked-approved',
-          outcome:
-            entry.outcome === 'rolled-back'
-              ? 'failed'
-              : entry.outcome === 'rejected'
-                ? 'denied'
-                : 'succeeded',
-          exitCode: null,
-          durationMs: null,
-        });
-      } catch {
-        // An audit write must not abort the rollback path.
-      }
-    },
-    git,
-    verify: () => Promise.resolve(verification),
-    apply: async (applied) => {
-      await applyChange(root, applied);
-    },
-    discard: async () => {
-      // Nothing to undo: the change only ever existed in a scratch copy until
-      // this point, and a rejection never reached apply.
-    },
-    healthCheck: async () => health(root),
-    confirm: () => Promise.resolve(true), // already approved above, with the phrase
-    now,
-  });
+  const outcome = await (async () => {
+    try {
+      return await runSelfModification(change, {
+        atlasHome,
+        audit: (entry) => {
+          try {
+            audit.append({
+              timestamp: now(),
+              eventKind: 'self-modification',
+              command: entry.paths.join(', ') || '(no files)',
+              summary: entry.summary,
+              // Self-modification is gated unconditionally, so it is recorded as
+              // approved through the text gate path and never as an auto-allow.
+              gatePath: 'text-safe-word',
+              autonomy: readAutonomySync(atlasHome).level,
+              riskTier: 2,
+              matchedRule: 'selfmod',
+              decision:
+                entry.outcome === 'rejected'
+                  ? 'asked-denied'
+                  : 'asked-approved',
+              outcome:
+                entry.outcome === 'rolled-back'
+                  ? 'failed'
+                  : entry.outcome === 'rejected'
+                    ? 'denied'
+                    : 'succeeded',
+              exitCode: null,
+              durationMs: null,
+            });
+          } catch {
+            // An audit write must not abort the rollback path.
+          }
+        },
+        git,
+        verify: () => Promise.resolve(verification),
+        apply: async (applied) => {
+          await applyChange(root, applied);
+        },
+        discard: async () => {
+          // Nothing to undo: the change only ever existed in a scratch copy until
+          // this point, and a rejection never reached apply.
+        },
+        healthCheck: async () => health(root),
+        confirm: () => Promise.resolve(true), // already approved above, with the phrase
+        now,
+      });
+    } catch (error) {
+      // Applying or health-checking failed outright. Say so plainly rather than
+      // letting the process die with a stack trace.
+      const detail = error instanceof Error ? error.message : String(error);
+      appendLedger(atlasHome, {
+        at: now(),
+        outcome: 'rolled-back',
+        summary: change.summary,
+        paths: change.writes.map((write) => write.path),
+        explanation: change.explanation,
+        rolledBack: false,
+        detail: `the workflow threw: ${detail}`,
+      });
+      console.error(
+        `The change could not be applied or health-checked: ${detail}\n` +
+          'The working tree may contain a partial change. Inspect it before ' +
+          'running anything else.',
+      );
+      return { kind: 'snapshot-failed', reason: detail } as const;
+    }
+  })();
 
   switch (outcome.kind) {
     case 'applied':
-      if (outcome.rolledBack) {
-        console.error(
-          'Health check failed; the change was rolled back automatically.',
-        );
+      if (!outcome.healthy) {
+        // Health failed. Either it was rolled back, or there was nothing known
+        // good to roll back to - both are failures, and the difference is
+        // exactly what the user needs to be told.
+        if (outcome.rolledBack) {
+          console.error(
+            'Health check failed; the change was rolled back automatically.',
+          );
+        } else {
+          console.error(
+            'Health check failed and the change was NOT rolled back: there is ' +
+              'no known-good snapshot to revert to. The change is still in the ' +
+              'working tree on branch ' +
+              outcome.snapshot.branch +
+              '. Recover it with:\n' +
+              `  git reset --hard ${outcome.snapshot.preSha}`,
+          );
+        }
         return 1;
       }
       console.log(

@@ -4,7 +4,8 @@
  * Ordered so nothing reaches the user unverified and nothing is applied
  * unrecoverably:
  *
- *   validate -> verify -> explain -> approve -> apply -> snapshot -> health
+ *   clean tree -> protected boundary -> verify -> approve -> apply ->
+ *   snapshot -> health -> roll back if unhealthy
  *
  * A failure at any step discards the change completely. There is no partial
  * application and no path that quietly re-proposes the same change, because a
@@ -53,6 +54,9 @@ export type ApplyOutcome =
       readonly kind: 'applied';
       readonly snapshot: Snapshot;
       readonly health: HealthReport;
+      /** Whether the health check passed without needing a rollback. */
+      readonly healthy: boolean;
+      /** True only when health failed and the revert actually succeeded. */
       readonly rolledBack: boolean;
     };
 
@@ -108,23 +112,38 @@ export async function runSelfModification(
   deps: WorkflowDeps,
 ): Promise<ApplyOutcome> {
   const at = deps.now?.() ?? new Date().toISOString();
-  const log = (entry: Omit<LedgerEntry, 'at'>): void => {
-    appendLedger(deps.atlasHome, { at, ...entry });
-  };
   const paths = change.writes.map((write) => write.path);
+
+  /**
+   * Ends an attempt.
+   *
+   * Every terminal outcome goes through here, so the ledger and the audit sink
+   * cannot drift apart. An outcome that records one and not the other is
+   * exactly the attempt that leaves no trace in the history anyone reviews.
+   */
+  const finish = (
+    entry: Omit<LedgerEntry, 'at'>,
+    outcome: ApplyOutcome,
+  ): ApplyOutcome => {
+    appendLedger(deps.atlasHome, { at, ...entry });
+    deps.audit?.(entry);
+    return outcome;
+  };
 
   // 0. The tree must be clean before anything is applied, so the snapshot can
   //    isolate this change from any unrelated work.
   const clean = requireCleanTree(deps.git);
   if (!clean.ok) {
-    log({
-      outcome: 'snapshot-failed',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      detail: clean.reason,
-    });
-    return { kind: 'snapshot-failed', reason: clean.reason };
+    return finish(
+      {
+        outcome: 'snapshot-failed',
+        summary: change.summary,
+        paths,
+        explanation: change.explanation,
+        detail: clean.reason,
+      },
+      { kind: 'snapshot-failed', reason: clean.reason },
+    );
   }
 
   // 1. Boundary first: a protected path is refused before any work happens, so
@@ -132,21 +151,16 @@ export async function runSelfModification(
   const validation = validateChange(change);
   if (!validation.acceptable) {
     const reason = refusalReason(validation);
-    log({
-      outcome: 'refused-protected',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      detail: reason,
-    });
-    deps.audit?.({
-      outcome: 'refused-protected',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      detail: reason,
-    });
-    return { kind: 'refused', reason };
+    return finish(
+      {
+        outcome: 'refused-protected',
+        summary: change.summary,
+        paths,
+        explanation: change.explanation,
+        detail: reason,
+      },
+      { kind: 'refused', reason },
+    );
   }
 
   // 2. Verify before the user is ever asked. Approving a change that has not
@@ -154,19 +168,22 @@ export async function runSelfModification(
   const verification = await deps.verify(change);
   if (!verification.ok) {
     await deps.discard();
-    log({
-      outcome: 'failed-verification',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      ...(verification.failedAt === undefined
-        ? {}
-        : { detail: `failed at ${verification.failedAt}` }),
-    });
-    return { kind: 'unverified', verification };
+    return finish(
+      {
+        outcome: 'failed-verification',
+        summary: change.summary,
+        paths,
+        explanation: change.explanation,
+        ...(verification.failedAt === undefined
+          ? {}
+          : { detail: `failed at ${verification.failedAt}` }),
+      },
+      { kind: 'unverified', verification },
+    );
   }
 
-  log({
+  appendLedger(deps.atlasHome, {
+    at,
     outcome: 'proposed',
     summary: change.summary,
     paths,
@@ -178,15 +195,18 @@ export async function runSelfModification(
   const approved = await deps.confirm(change);
   if (!approved) {
     await deps.discard();
-    log({
-      outcome: 'rejected',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-    });
-    return { kind: 'rejected' };
+    return finish(
+      {
+        outcome: 'rejected',
+        summary: change.summary,
+        paths,
+        explanation: change.explanation,
+      },
+      { kind: 'rejected' },
+    );
   }
-  log({
+  appendLedger(deps.atlasHome, {
+    at,
     outcome: 'approved',
     summary: change.summary,
     paths,
@@ -198,78 +218,77 @@ export async function runSelfModification(
   const snap = snapshotApplied(deps.git, { summary: change.summary, at });
   if (!snap.ok) {
     await deps.discard();
-    log({
-      outcome: 'snapshot-failed',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      detail: snap.reason,
-    });
-    return { kind: 'snapshot-failed', reason: snap.reason };
+    return finish(
+      {
+        outcome: 'snapshot-failed',
+        summary: change.summary,
+        paths,
+        explanation: change.explanation,
+        detail: snap.reason,
+      },
+      { kind: 'snapshot-failed', reason: snap.reason },
+    );
   }
 
   // 5. Health. A change that cannot start is rolled back without asking,
   //    because leaving it in place is the one state that is worse than never
   //    having had the feature.
   const health = report(await deps.healthCheck());
-  const recovery = recoveryFor(health);
-  if (recovery === 'accept') {
-    log({
-      outcome: 'applied',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      sha: snap.snapshot.sha,
-    });
-    deps.audit?.({
-      outcome: 'applied',
-      summary: change.summary,
-      paths,
-      explanation: change.explanation,
-      sha: snap.snapshot.sha,
-    });
-    return {
-      kind: 'applied',
-      snapshot: snap.snapshot,
-      health,
-      rolledBack: false,
-    };
+  if (recoveryFor(health) === 'accept') {
+    return finish(
+      {
+        outcome: 'applied',
+        summary: change.summary,
+        paths,
+        explanation: change.explanation,
+        sha: snap.snapshot.sha,
+      },
+      {
+        kind: 'applied',
+        snapshot: snap.snapshot,
+        health,
+        healthy: true,
+        rolledBack: false,
+      },
+    );
   }
 
   // Roll back to the state before the change, not to the snapshot that
-  // contains it.
-  const good = lastKnownGood([...(deps.knownGood ?? []), snap.snapshot]);
+  // contains it. The snapshot just taken is not a candidate: its own health
+  // check is the one that failed.
+  const good = lastKnownGood(deps.knownGood ?? []);
   let detail = `health check failed at ${health.failedAt ?? 'unknown'}`;
   let rolledBack = false;
   if (good !== undefined) {
     const reverted = revertTo(deps.git, good);
     rolledBack = reverted.ok;
     detail = reverted.ok
-      ? `${detail}; rolled back to ${good.sha}`
+      ? `${detail}; rolled back to ${good.preSha}`
       : `${detail}; ROLLBACK ALSO FAILED: ${reverted.reason}`;
   } else {
+    // Never claim a rollback that did not happen: the broken change is still
+    // in the tree, and the caller has to be told so.
     detail = `${detail}; no known-good snapshot to roll back to`;
   }
 
-  log({
-    outcome: 'rolled-back',
-    summary: change.summary,
-    paths,
-    explanation: change.explanation,
-    sha: snap.snapshot.sha,
-    rolledBack,
-    detail,
-  });
-  deps.audit?.({
-    outcome: 'rolled-back',
-    summary: change.summary,
-    paths,
-    explanation: change.explanation,
-    sha: snap.snapshot.sha,
-    rolledBack,
-    detail,
-  });
-  return { kind: 'applied', snapshot: snap.snapshot, health, rolledBack };
+  return finish(
+    {
+      outcome: 'rolled-back',
+      summary: change.summary,
+      paths,
+      explanation: change.explanation,
+      sha: snap.snapshot.sha,
+      rolledBack,
+      detail,
+    },
+    {
+      kind: 'applied',
+      snapshot: snap.snapshot,
+      health,
+      healthy: false,
+      rolledBack,
+    },
+  );
 }
 
 export { evaluateHealth };

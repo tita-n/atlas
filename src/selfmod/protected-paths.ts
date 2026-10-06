@@ -42,28 +42,85 @@ export interface ProtectedPathViolation {
   readonly reason: string;
 }
 
+/**
+ * Canonicalises a repo-relative path for comparison.
+ *
+ * Lowercased as well as normalised: the same file can be spelled
+ * `SRC/AUDIT/audit-log.ts` and still resolve to the protected file on a
+ * case-insensitive filesystem, so a boundary that only matched one casing would
+ * hold on Linux and fail on a colleague's Mac.
+ */
 function normalize(path: string): string {
-  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+  let normalized = path.trim().replace(/\\/g, '/');
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized.toLowerCase();
+}
+
+const WINDOWS_DRIVE = /^[A-Za-z]:\//;
+
+/**
+ * Resolves a repo-relative spelling to one canonical form, or explains why it
+ * cannot be checked.
+ *
+ * The list below is spelled repo-relative. A path that is absolute, Windows-
+ * rooted, or climbs out of the repository cannot be compared against it without
+ * knowing where the repo is, so it is refused outright rather than guessed at:
+ * an uncheckable path must fail closed, or the boundary is a spelling exercise.
+ */
+function resolvePath(
+  path: string,
+): { ok: true; resolved: string } | { ok: false; reason: string } {
+  if (path.trim() === '')
+    return { ok: false, reason: 'The write has no path.' };
+  const normalized = normalize(path);
+  // Count the real segments before `..` is collapsed, so an over-traversal is
+  // detectable afterwards.
+  const rawDepth = normalized
+    .split('/')
+    .filter((part) => part !== '.' && part !== '' && part !== '..').length;
+  if (normalized.startsWith('/') || WINDOWS_DRIVE.test(normalized)) {
+    return {
+      ok: false,
+      reason:
+        'A change must name repo-relative paths. An absolute path cannot be ' +
+        'checked against the protected list.',
+    };
+  }
+  // Collapse traversal, so `src/selfmod/../audit/audit-log.ts` is compared as
+  // the file it actually is. Climbing above the repository root is refused:
+  // `../repo/src/audit/audit-log.ts` names a real protected file while looking
+  // like it points nowhere.
+  const segments: string[] = [];
+  for (const part of normalized.split('/')) {
+    if (part === '.' || part === '') continue;
+    if (part === '..') {
+      if (segments.pop() === undefined) {
+        return { ok: false, reason: 'The path climbs out of the repository.' };
+      }
+    } else segments.push(part);
+  }
+  // Still escaping after collapsing means the `..` outnumbered the real
+  // segments: `src/selfmod/../../audit/x` must not quietly resolve to
+  // `audit/x` and slip past a repo-relative list.
+  if (rawDepth > segments.length) {
+    return { ok: false, reason: 'The path climbs out of the repository.' };
+  }
+  if (segments.length === 0) {
+    return { ok: false, reason: 'The write has no path.' };
+  }
+  return { ok: true, resolved: segments.join('/') };
 }
 
 /** Whether a path is off-limits, and why. */
 export function checkProtectedPath(
   path: string,
 ): ProtectedPathViolation | undefined {
-  const normalized = normalize(path);
-
-  // Reject traversal out of a protected directory, e.g.
-  // src/selfmod/../../src/audit/audit-log.ts.
-  const segments: string[] = [];
-  for (const part of normalized.split('/')) {
-    if (part === '.' || part === '') continue;
-    if (part === '..') segments.pop();
-    else segments.push(part);
-  }
-  const resolved = segments.join('/');
+  const resolution = resolvePath(path);
+  if (!resolution.ok) return { path, reason: resolution.reason };
+  const resolved = resolution.resolved;
 
   for (const directory of PROTECTED_DIRECTORIES) {
-    if (resolved.startsWith(directory)) {
+    if (resolved.startsWith(directory) || resolved === directory.slice(0, -1)) {
       return {
         path,
         reason: `${directory} is Atlas's own safety and audit layer.`,

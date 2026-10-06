@@ -69,10 +69,17 @@ export function snapshotApplied(
   const commit = git(['commit', '-m', `selfmod: ${input.summary}`]);
   if (!commit.ok) return { ok: false, reason: commit.stderr.trim() };
   const sha = git(['rev-parse', 'HEAD']);
+  const resolvedSha = sha.ok ? sha.stdout.trim() : '';
+  if (resolvedSha === '') {
+    return {
+      ok: false,
+      reason: 'could not read the commit just created; nothing is snapshotted',
+    };
+  }
   return {
     ok: true,
     snapshot: {
-      sha: sha.ok ? sha.stdout.trim() : '',
+      sha: resolvedSha,
       preSha,
       branch,
       at: input.at,
@@ -84,14 +91,20 @@ export function snapshotApplied(
 /**
  * Reverts to a known-good snapshot.
  *
- * Restores the recorded tree first, then moves the branch pointer, so a
- * failure part-way leaves the previous good commit reachable rather than a
- * half-reverted one.
+ * Targets `preSha`, the commit from *before* the change. Resetting to `sha`
+ * would restore the tree that already contains the change and revert nothing,
+ * which is the difference between a rollback and a silent no-op.
  */
 export function revertTo(
   git: GitRunner,
   snapshot: Snapshot,
 ): { ok: true } | { ok: false; reason: string } {
+  if (snapshot.preSha === '') {
+    return {
+      ok: false,
+      reason: 'the snapshot records no pre-change commit to revert to',
+    };
+  }
   const restore = git(['checkout', snapshot.branch, '--', '.']);
   if (!restore.ok) {
     return {
@@ -99,11 +112,11 @@ export function revertTo(
       reason: `could not restore files: ${restore.stderr.trim()}`,
     };
   }
-  const reset = git(['reset', '--hard', snapshot.sha]);
+  const reset = git(['reset', '--hard', snapshot.preSha]);
   if (!reset.ok) {
     return {
       ok: false,
-      reason: `could not reset to ${snapshot.sha}: ${reset.stderr.trim()}`,
+      reason: `could not reset to ${snapshot.preSha}: ${reset.stderr.trim()}`,
     };
   }
   return { ok: true };
@@ -129,10 +142,16 @@ export function requireCleanTree(
   };
 }
 
-/** The last snapshot recorded as healthy, which rollback should target. */
+/**
+ * The newest snapshot that can actually be reverted to.
+ *
+ * Only snapshots with a recorded pre-change commit are candidates: one without
+ * it cannot undo anything, so picking it would report a rollback that never
+ * happened.
+ */
 export function lastKnownGood(
   snapshots: readonly Snapshot[],
 ): Snapshot | undefined {
-  const healthy = snapshots.filter((snapshot) => snapshot.sha !== '');
+  const healthy = snapshots.filter((snapshot) => snapshot.preSha !== '');
   return healthy[healthy.length - 1];
 }

@@ -21,9 +21,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
-import type { ChangeSet } from './change-set.js';
+import type { ChangeSet, FileWrite } from './change-set.js';
 import {
   evaluateHealth,
   healthSteps,
@@ -97,16 +97,29 @@ export async function scratchCopy(repoRoot: string): Promise<string> {
   return dir;
 }
 
-/** Writes the proposed files into a tree. */
+/**
+ * Writes the proposed files into a tree.
+ *
+ * A write that resolves outside the tree is refused before it happens. The
+ * comparison is against the root *plus a separator*, because a plain prefix
+ * test also accepts a sibling directory whose name merely starts with the
+ * root's: `<root>-evil` passes `startsWith(<root>)`.
+ */
 export async function writeChange(
   root: string,
   change: ChangeSet,
 ): Promise<void> {
+  const base = resolve(root);
   for (const write of change.writes) {
-    const target = resolve(root, write.path);
-    if (!target.startsWith(resolve(root))) {
-      // Belt and braces: a path escaping the tree is never written.
+    if (write.path.trim() === '') {
+      throw new Error('refusing to write a file with no path');
+    }
+    const target = resolve(base, write.path);
+    if (target !== base && !target.startsWith(base + sep)) {
       throw new Error(`refusing to write outside the tree: ${write.path}`);
+    }
+    if (target === base) {
+      throw new Error(`refusing to write over the tree root: ${write.path}`);
     }
     await writeFile(target, write.contents, 'utf8');
   }
@@ -162,6 +175,20 @@ export async function verifyChange(
   }
   try {
     await writeChange(scratch, change);
+  } catch (error) {
+    return {
+      ok: false,
+      steps: [
+        {
+          name: 'write',
+          ok: false,
+          detail: error instanceof Error ? error.message : String(error),
+        },
+      ],
+      failedAt: 'write',
+    };
+  }
+  try {
     const result = await verifyIn(scratch, execFn);
     const failedAt = result.steps.find((step) => !step.ok)?.name;
     return {
@@ -210,17 +237,53 @@ export async function healthCheckLive(
 
 /** Reads a change set from a JSON file, for the command-line entry point. */
 export async function readChangeSet(path: string): Promise<ChangeSet> {
-  const raw = await readFile(path, 'utf8');
-  const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new Error('change set must be an object');
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(
+      code === 'ENOENT'
+        ? `No change-set file at ${path}.`
+        : `Could not read the change set at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `The change set at ${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('The change set must be a JSON object.');
   }
   const candidate = parsed as Partial<ChangeSet>;
   if (
     typeof candidate.summary !== 'string' ||
     !Array.isArray(candidate.writes)
   ) {
-    throw new Error('change set needs a summary and a writes array');
+    throw new Error(
+      'The change set needs a "summary" string and a "writes" array.',
+    );
+  }
+  if (candidate.writes.length === 0) {
+    throw new Error(
+      'The change set has no writes, so it would change nothing.',
+    );
+  }
+  for (const write of candidate.writes) {
+    const asWrite = write as Partial<FileWrite>;
+    if (
+      typeof asWrite.path !== 'string' ||
+      asWrite.path.trim() === '' ||
+      typeof asWrite.contents !== 'string'
+    ) {
+      throw new Error(
+        'Every write needs a non-empty "path" string and "contents" string.',
+      );
+    }
   }
   return {
     summary: candidate.summary,

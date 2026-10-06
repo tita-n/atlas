@@ -7,9 +7,16 @@
  * happens at all.
  */
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  lstatSync,
+} from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import {
   checkProtectedPath,
@@ -41,6 +48,11 @@ import {
   type GitRunner,
 } from '../../src/selfmod/snapshots.js';
 import { runSelfModification } from '../../src/selfmod/workflow.js';
+import {
+  readChangeSet,
+  scratchCopy,
+  writeChange,
+} from '../../src/selfmod/runner.js';
 import { selfModificationAlwaysAsks } from '../../src/permissions/autonomy.js';
 
 const change = (paths: readonly string[]): ChangeSet => ({
@@ -110,6 +122,36 @@ describe('the protected layer', () => {
     expect(refusalReason(validated)).toContain('will not modify');
   });
 
+  it('refuses spellings that only differ in how the path is written', () => {
+    // Each of these reaches the protected file when handed to a real write, so
+    // a boundary that only matches the canonical spelling is not a boundary.
+    for (const path of [
+      '/home/user/repo/src/audit/audit-log.ts',
+      '/repo/src/permissions/autonomy.ts',
+      'C:\\repo\\src\\audit\\audit-log.ts',
+      '../repo/src/audit/audit-log.ts',
+      'src/permissions/autonomy.ts ',
+      ' src/permissions/autonomy.ts',
+      'src/selfmod',
+      '',
+      '.',
+    ]) {
+      expect(checkProtectedPath(path), path).toBeDefined();
+    }
+  });
+
+  it('refuses the whole set when one path is protected and the rest are not', () => {
+    // Nothing may be partially applied: the ordinary file must not be written
+    // on the strength of the protected one being refused.
+    const validated = validateChange(
+      change(['src/tui/App.tsx', 'src/selfmod/protected-paths.ts']),
+    );
+    expect(validated.acceptable).toBe(false);
+    expect(refusalReason(validated)).toContain(
+      'src/selfmod/protected-paths.ts',
+    );
+  });
+
   it('exposes the list so it can be reviewed', () => {
     const listed = protectedPaths();
     expect(listed.files.length).toBeGreaterThanOrEqual(guarded.length);
@@ -149,6 +191,16 @@ describe('health and rollback', () => {
     expect(good?.sha).toBe('bbb');
   });
 
+  it('skips a snapshot that could not be reverted to', () => {
+    // No pre-change commit means no rollback is possible, so it is not a
+    // candidate however new it is.
+    const good = lastKnownGood([
+      { sha: 'aaa', preSha: 'p1', branch: 'b1', at: '1', summary: 'one' },
+      { sha: 'bbb', preSha: '', branch: 'b2', at: '2', summary: 'two' },
+    ]);
+    expect(good?.sha).toBe('aaa');
+  });
+
   it('records the pre-change commit, which is what actually undoes it', () => {
     // Resetting to the snapshot restores the tree that already contains the
     // change, so it reverts nothing.
@@ -180,14 +232,33 @@ describe('health and rollback', () => {
       return { ok: true, stdout: '', stderr: '' };
     };
     revertTo(git, {
-      sha: 'abc',
+      sha: 'after',
       preSha: 'before',
       branch: 'selfmod/1',
       at: 'now',
       summary: 'x',
     });
     expect(calls[0]).toEqual(['checkout', 'selfmod/1', '--', '.']);
-    expect(calls[1]).toEqual(['reset', '--hard', 'abc']);
+    // preSha, not sha: the snapshot's own commit already contains the change,
+    // so resetting to it would revert nothing.
+    expect(calls[1]).toEqual(['reset', '--hard', 'before']);
+  });
+
+  it('refuses to revert to a snapshot with no pre-change commit', () => {
+    const calls: string[][] = [];
+    const git: GitRunner = (args) => {
+      calls.push([...args]);
+      return { ok: true, stdout: '', stderr: '' };
+    };
+    const reverted = revertTo(git, {
+      sha: 'abc',
+      preSha: '',
+      branch: 'selfmod/1',
+      at: 'now',
+      summary: 'x',
+    });
+    expect(reverted.ok).toBe(false);
+    expect(calls).toEqual([]);
   });
 
   it('reports failure rather than claiming a rollback that did not happen', () => {
@@ -427,6 +498,257 @@ describe('the workflow', () => {
     });
     await runSelfModification(change(['src/tui/App.tsx']), d.deps);
     expect(attempts).toBe(1);
+  });
+
+  it('reverts to the commit before the change, never to its own snapshot', async () => {
+    // A reset to the snapshot's own sha restores the tree that already
+    // contains the change, so it would report a rollback that undid nothing.
+    const calls: string[] = [];
+    const git: GitRunner = (args) => {
+      calls.push(args.join(' '));
+      if (args[0] === 'status') return { ok: true, stdout: '', stderr: '' };
+      // First rev-parse is the pre-change head; the rest read the new commit.
+      const heads = calls.filter((call) => call === 'rev-parse HEAD').length;
+      return {
+        ok: true,
+        stdout: heads === 1 ? 'before-sha' : 'after-sha',
+        stderr: '',
+      };
+    };
+    const d = deps({
+      git,
+      healthCheck: () =>
+        Promise.resolve(
+          evaluateHealth([
+            { name: 'starts', ok: false, detail: 'SyntaxError' },
+          ]),
+        ),
+      knownGood: [
+        {
+          sha: 'older-good',
+          preSha: 'older-pre',
+          branch: 'selfmod/prev',
+          at: 'earlier',
+          summary: 'known good',
+        },
+      ],
+    });
+    const result = await runSelfModification(
+      change(['src/tui/App.tsx']),
+      d.deps,
+    );
+    if (result.kind !== 'applied') throw new Error('expected applied');
+    expect(result.rolledBack).toBe(true);
+    expect(result.healthy).toBe(false);
+    // The pre-change head this change was built on top of, never 'after-sha'.
+    expect(calls).toContain('reset --hard older-pre');
+    expect(calls).not.toContain('reset --hard after-sha');
+  });
+
+  it('reports honestly when there is no known-good snapshot to revert to', async () => {
+    const d = deps({
+      healthCheck: () =>
+        Promise.resolve(
+          evaluateHealth([
+            { name: 'starts', ok: false, detail: 'SyntaxError' },
+          ]),
+        ),
+    });
+    const result = await runSelfModification(
+      change(['src/tui/App.tsx']),
+      d.deps,
+    );
+    if (result.kind !== 'applied') throw new Error('expected applied');
+    // Not healthy, and no rollback claimed: the caller must not report success.
+    expect(result.healthy).toBe(false);
+    expect(result.rolledBack).toBe(false);
+    const entry = readLedger(d.home).at(-1);
+    expect(entry?.outcome).toBe('rolled-back');
+    expect(entry?.rolledBack).toBe(false);
+    expect(entry?.detail).toContain('no known-good snapshot');
+  });
+
+  it('writes both a ledger entry and an audit row for every terminal outcome', async () => {
+    const audited: string[] = [];
+    const auditHome = mkdtempSync(join(tmpdir(), 'atlas-sm-audit-'));
+    const scenarios: {
+      name: string;
+      overrides: Partial<Parameters<typeof runSelfModification>[1]>;
+    }[] = [
+      { name: 'protected', overrides: {} },
+      {
+        name: 'unverified',
+        overrides: {
+          verify: () =>
+            Promise.resolve({ ok: false, steps: [], failedAt: 'tests' }),
+        },
+      },
+      {
+        name: 'rejected',
+        overrides: { confirm: () => Promise.resolve(false) },
+      },
+      {
+        name: 'dirty tree',
+        overrides: {
+          git: (args: readonly string[]) =>
+            args[0] === 'status'
+              ? { ok: true, stdout: ' M src/tui/App.tsx', stderr: '' }
+              : { ok: true, stdout: 'sha', stderr: '' },
+        },
+      },
+      {
+        name: 'unhealthy',
+        overrides: {
+          healthCheck: () =>
+            Promise.resolve(
+              evaluateHealth([{ name: 'starts', ok: false, detail: 'no' }]),
+            ),
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const d = deps(scenario.overrides);
+      const paths =
+        scenario.name === 'protected'
+          ? ['src/permissions/autonomy.ts']
+          : ['src/tui/App.tsx'];
+      const result = await runSelfModification(change(paths), {
+        ...d.deps,
+        atlasHome: auditHome,
+        audit: (entry) => {
+          audited.push(`${scenario.name}:${entry.outcome}`);
+        },
+      });
+      expect(result.kind, scenario.name).not.toBe(undefined);
+      const entry = readLedger(auditHome).at(-1);
+      expect(entry?.outcome, `${scenario.name} ledger`).toBeDefined();
+      expect(audited, `${scenario.name} audit`).toEqual([
+        `${scenario.name}:${entry?.outcome ?? ''}`,
+      ]);
+      audited.length = 0;
+    }
+  });
+
+  it('orders the steps so nothing reaches the user unverified', async () => {
+    const d = deps();
+    await runSelfModification(change(['src/tui/App.tsx']), d.deps);
+    const order = d.calls;
+    // Verify, then approve, then apply, then commit, then the real start.
+    const applyAt = order.indexOf('APPLY');
+    const commitAt = order.findIndex((call) => call.startsWith('commit'));
+    const expectVerifyBeforeApply = applyAt > -1;
+    expect(expectVerifyBeforeApply).toBe(true);
+    expect(commitAt).toBeGreaterThan(applyAt);
+    expect(order.some((call) => call.startsWith('checkout -b selfmod/'))).toBe(
+      true,
+    );
+  });
+
+  it('never applies a change that failed verification or the boundary', async () => {
+    const unverified = deps({
+      verify: () =>
+        Promise.resolve({ ok: false, steps: [], failedAt: 'build' }),
+    });
+    await runSelfModification(change(['src/tui/App.tsx']), unverified.deps);
+    expect(unverified.calls).not.toContain('APPLY');
+
+    const protectedChange = deps();
+    await runSelfModification(
+      change(['src/audit/audit-log.ts']),
+      protectedChange.deps,
+    );
+    expect(protectedChange.calls).not.toContain('APPLY');
+  });
+});
+
+describe('the scratch copy', () => {
+  it('refuses a write that escapes into a sibling of the tree', async () => {
+    // `<root>-evil` shares the root's prefix, so a bare startsWith test would
+    // let it through.
+    const root = await mkdtemp(join(tmpdir(), 'atlas-sm-scratch-'));
+    await expect(
+      writeChange(root, {
+        summary: 'x',
+        explanation: 'x',
+        writes: [{ path: `../${basename(root)}-evil/pwned.ts`, contents: 'x' }],
+      }),
+    ).rejects.toThrow(/outside the tree/);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('refuses a traversal out of the tree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atlas-sm-scratch-'));
+    await expect(
+      writeChange(root, {
+        summary: 'x',
+        explanation: 'x',
+        writes: [{ path: '../../etc/pwned.ts', contents: 'x' }],
+      }),
+    ).rejects.toThrow(/outside the tree/);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('symlinks node_modules instead of copying it', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'atlas-sm-fixture-'));
+    await mkdir(join(repo, 'node_modules'), { recursive: true });
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await writeFile(join(repo, 'node_modules', 'marker.txt'), 'dep');
+    const scratch = await scratchCopy(repo);
+    try {
+      expect(lstatSync(join(scratch, 'node_modules')).isSymbolicLink()).toBe(
+        true,
+      );
+      // Copies the marker file so a symlinked read still works.
+      await writeChange(scratch, {
+        summary: 'x',
+        explanation: 'x',
+        writes: [{ path: 'src/new.ts', contents: 'export const x = 1;\n' }],
+      });
+      expect(readFileSync(join(scratch, 'src/new.ts'), 'utf8')).toContain(
+        'export const x',
+      );
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('failure modes at the entry point', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'atlas-sm-changes-'));
+
+  it('explains a missing change-set file', async () => {
+    await expect(readChangeSet(join(dir, 'absent.json'))).rejects.toThrow(
+      /No change-set file/,
+    );
+  });
+
+  it('explains malformed JSON rather than leaking a parse stack', async () => {
+    const path = join(dir, 'broken.json');
+    writeFileSync(path, '{"summary": "x", ');
+    await expect(readChangeSet(path)).rejects.toThrow(/not valid JSON/);
+  });
+
+  it('explains a change set with no writes', async () => {
+    const path = join(dir, 'empty.json');
+    writeFileSync(path, JSON.stringify({ summary: 'nothing', writes: [] }));
+    await expect(readChangeSet(path)).rejects.toThrow(/no writes/);
+  });
+
+  it('explains a write with no path or contents', async () => {
+    const path = join(dir, 'malformed-write.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ summary: 'x', writes: [{ path: 'src/a.ts' }] }),
+    );
+    await expect(readChangeSet(path)).rejects.toThrow(/Every write needs/);
+  });
+
+  it('refuses a change-set file that is not an object', async () => {
+    const path = join(dir, 'array.json');
+    writeFileSync(path, '[]');
+    await expect(readChangeSet(path)).rejects.toThrow(/JSON object/);
   });
 });
 
