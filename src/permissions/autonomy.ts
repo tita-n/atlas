@@ -170,22 +170,53 @@ export interface HardFloorVerdict {
   readonly reason?: string;
 }
 
-/** Root or the user's home, resolved so `~` and `/` forms cannot slip past. */
+/**
+ * Whether a deletion target is a filesystem root, the home directory, or an
+ * ancestor/dot-path/glob form of either.
+ *
+ * Written to resist *spellings*, not just values. A plain equality check
+ * against the home path is defeated by the same intent expressed as
+ * `~/*`, `/home/me/.` or `/home/me/..`, which are all catastrophic deletions
+ * that read differently but destroy exactly as much.
+ */
 function isCatastrophicTarget(
   target: string,
   home: string | undefined,
 ): boolean {
-  const normalized = target.replace(/\/+$/, '') || '/';
-  const unexpanded = target.startsWith('~') || target.startsWith('$HOME');
-  if (normalized === '/' || normalized === '/*') return true;
-  if (unexpanded) return true;
-  if (
-    home !== undefined &&
-    home !== '' &&
-    normalized === home.replace(/\/+$/, '')
-  ) {
-    return true;
-  }
+  const raw = target.trim();
+  if (raw === '') return false;
+
+  // `~`, `~/`, `~/*` and `$HOME` forms never need further proof.
+  if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~/*')) return true;
+  if (raw.startsWith('$HOME')) return true;
+
+  const hasGlob = /[*?]/.test(raw);
+
+  // Peel trailing glob and dot-segments: `/*`, `/.`, `/..`, and combinations.
+  let path = raw.replace(/\/+$/, '');
+  let previous: string;
+  do {
+    previous = path;
+    path = path
+      .replace(/\/\*$/, '')
+      .replace(/\/\.$/, '')
+      .replace(/\/\.\.$/, '');
+  } while (path !== previous && path !== '');
+
+  // Peeling can consume the whole path (as in `/..`), which is the root.
+  if (path === '' || path === '/') return true;
+
+  if (home === undefined || home === '') return false;
+  const resolvedHome = home.replace(/\/+$/, '');
+  if (resolvedHome === '') return false;
+
+  // The home directory itself, however it was spelled.
+  if (path === resolvedHome) return true;
+  // An ancestor of home: wiping `/home` takes every home with it.
+  if (resolvedHome.startsWith(`${path}/`)) return true;
+  // A glob that covers home, such as `/home/*`.
+  if (hasGlob && resolvedHome.startsWith(path)) return true;
+
   return false;
 }
 

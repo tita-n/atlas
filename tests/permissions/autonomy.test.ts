@@ -129,6 +129,55 @@ describe('the hard floor', () => {
     expect(verdict.category).toBe('self-modification');
   });
 
+  /**
+   * The same intent, different spellings.
+   *
+   * Regression: the floor originally compared the target to the home path for
+   * equality, so `rm -rf /home/me/.` and `rm -rf ~/*` were classified as
+   * ordinary filesystem work and skipped under Unattended. A home-directory
+   * wipe expressed with a glob or dot-path destroys exactly as much.
+   */
+  const homeSpellings: readonly string[] = [
+    `rm -rf ${HOME}/.`,
+    `rm -rf ${HOME}/*`,
+    `rm -rf ${HOME}/..`,
+    `rm -rf ${HOME}/./`,
+    `rm -rf ${HOME}/../`,
+    'rm -rf ~',
+    'rm -rf ~/',
+    'rm -rf ~/*',
+    'rm -rf $HOME',
+    'rm -rf $HOME/*',
+    'rm -rf /home',
+    'rm -rf /home/*',
+    'rm -rf /',
+    'rm -rf /*',
+  ];
+
+  it.each(homeSpellings)(
+    'always applies to a home-scoped wipe: %s',
+    (command) => {
+      expect(hardFloorVerdict(command, { home: HOME }).applies).toBe(true);
+    },
+  );
+
+  const stillOrdinary: readonly string[] = [
+    'rm -rf /tmp/x',
+    `rm -rf ${HOME}/scratch`,
+    `rm -rf ${HOME}/../other`,
+    'touch /home/tester/scratch/file',
+    `rm -rf ${HOME}2`,
+  ];
+
+  it.each(stillOrdinary)(
+    'does NOT over-apply to ordinary work: %s',
+    (command) => {
+      // Widening the floor to "any recursive delete" would turn unattended back
+      // into confirm-everything, which is the failure this module exists to avoid.
+      expect(hardFloorVerdict(command, { home: HOME }).applies).toBe(false);
+    },
+  );
+
   const ordinary = [
     'ls -la',
     'rm -rf /tmp/build',
