@@ -141,6 +141,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Removing installed packages changes system state.',
+    category: 'packages',
   },
   {
     id: 'ask-dnf-autoremove',
@@ -148,6 +149,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Autoremoving packages changes system state.',
+    category: 'packages',
   },
   {
     id: 'ask-firewall-change',
@@ -155,6 +157,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing firewall rules requires confirmation.',
+    category: 'network',
   },
   {
     id: 'ask-firewall-iptables',
@@ -162,6 +165,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing packet filtering rules requires confirmation.',
+    category: 'network',
   },
   {
     id: 'ask-chmod-system',
@@ -169,6 +173,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing permissions on system paths requires confirmation.',
+    category: 'filesystem',
   },
   {
     id: 'ask-chmod-system-with-flags',
@@ -176,6 +181,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing permissions on system paths requires confirmation.',
+    category: 'filesystem',
   },
   {
     id: 'ask-chown-system',
@@ -183,6 +189,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing ownership on system paths requires confirmation.',
+    category: 'filesystem',
   },
   {
     id: 'ask-chown-system-with-flags',
@@ -190,6 +197,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing ownership on system paths requires confirmation.',
+    category: 'filesystem',
   },
   {
     id: 'ask-read-private-key',
@@ -198,6 +206,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading a private key would send it to the model provider. Confirm you want that.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-private-key-ed25519',
@@ -206,6 +215,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading a private key would send it to the model provider. Confirm you want that.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-ssh-directory',
@@ -214,6 +224,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading SSH material would send it to the model provider. Confirm you want that.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-aws-credentials',
@@ -222,6 +233,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading cloud credentials would send them to the model provider. Confirm you want that.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-shadow',
@@ -230,6 +242,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading the password database requires root and is highly sensitive.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-pem',
@@ -238,6 +251,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading a .pem file likely sends a private key or certificate to the model provider.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-env-file',
@@ -246,6 +260,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading a .env file usually exposes API keys and secrets to the model provider.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-env-file-variant',
@@ -254,6 +269,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading a .env file usually exposes API keys and secrets to the model provider.',
+    category: 'secrets',
   },
   {
     id: 'ask-read-netrc',
@@ -262,6 +278,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Reading .netrc exposes saved credentials to the model provider.',
+    category: 'secrets',
   },
   {
     id: 'ask-find-write-output',
@@ -270,6 +287,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'find -fprintf writes matched paths into a file. Confirm the destination.',
+    category: 'filesystem',
   },
   {
     id: 'ask-find-write-fprint',
@@ -278,6 +296,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'find -fprint writes matched paths into a file. Confirm the destination.',
+    category: 'filesystem',
   },
   {
     id: 'ask-find-write-fprint0',
@@ -286,6 +305,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'find -fprint0 writes matched paths into a file. Confirm the destination.',
+    category: 'filesystem',
   },
   {
     id: 'ask-find-write-fls',
@@ -294,6 +314,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'find -fls appends file listings to a file. Confirm the destination.',
+    category: 'filesystem',
   },
   {
     id: 'ask-find-write-fopen',
@@ -302,6 +323,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'find -fopen writes every matched path to a file descriptor. Confirm it is intended.',
+    category: 'filesystem',
   },
   {
     id: 'ask-find-delete-action',
@@ -310,6 +332,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'find -delete removes every match. Confirm the search root is safe.',
+    category: 'filesystem',
   },
   {
     id: 'ask-copy-files',
@@ -318,6 +341,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Copying files writes to disk and can duplicate secrets. Confirm the source and destination.',
+    category: 'filesystem',
   },
   {
     id: 'ask-create-directory',
@@ -325,6 +349,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Creating a directory changes the filesystem.',
+    category: 'filesystem',
   },
   {
     id: 'ask-create-file',
@@ -332,6 +357,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Creating or touching a file changes the filesystem.',
+    category: 'filesystem',
   },
   {
     id: 'ask-permission-change',
@@ -340,6 +366,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Changing file permissions can make a file private or world-writable.',
+    category: 'filesystem',
   },
   {
     id: 'ask-ownership-change',
@@ -347,6 +374,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Changing file ownership changes who can access a file.',
+    category: 'filesystem',
   },
   {
     id: 'ask-sort-in-place',
@@ -354,6 +382,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'sort -o overwrites a file in place.',
+    category: 'filesystem',
   },
   {
     id: 'ask-service-control',
@@ -362,6 +391,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Controlling a system service can stop or reconfigure running software.',
+    category: 'services',
   },
   {
     id: 'ask-package-script',
@@ -370,6 +400,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'npm runs scripts and lifecycle hooks from this repository, which executes arbitrary code.',
+    category: 'packages',
   },
   {
     id: 'ask-build-tool',
@@ -377,6 +408,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'make executes commands from a Makefile in this repository.',
+    category: 'filesystem',
   },
   {
     id: 'ask-test-runner',
@@ -385,6 +417,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Running the test suite executes test code from this repository.',
+    category: 'filesystem',
   },
   {
     id: 'ask-compiler',
@@ -393,6 +426,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Running the compiler can execute plugins configured by this repository.',
+    category: 'filesystem',
   },
   {
     id: 'ask-git-network',
@@ -400,6 +434,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Pushing publishes commits to a remote.',
+    category: 'network',
   },
   {
     id: 'ask-git-fetch',
@@ -407,6 +442,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Fetching contacts a remote and can run remote helpers.',
+    category: 'network',
   },
   {
     id: 'ask-git-commit',
@@ -415,6 +451,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     tier: 2,
     description:
       'Committing runs repository hooks, which can execute arbitrary code.',
+    category: 'vcs',
   },
   {
     id: 'ask-git-force-push',
@@ -422,6 +459,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Force-pushing rewrites remote history.',
+    category: 'vcs',
   },
   {
     id: 'ask-git-reset-hard',
@@ -429,6 +467,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Resetting hard discards local changes.',
+    category: 'vcs',
   },
   {
     id: 'ask-systemctl-stop',
@@ -436,6 +475,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Stopping system services affects the host.',
+    category: 'services',
   },
   {
     id: 'ask-systemctl-disable',
@@ -443,6 +483,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Disabling system services affects the host.',
+    category: 'services',
   },
   {
     id: 'ask-rm-force-recursive',
@@ -450,6 +491,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Recursive force deletion can destroy data.',
+    category: 'filesystem',
   },
   {
     id: 'ask-rm-force-recursive-alt',
@@ -457,6 +499,7 @@ export const DEFAULT_PERMISSION_RULES: readonly PermissionRule[] = [
     decision: 'ask',
     tier: 2,
     description: 'Recursive force deletion can destroy data.',
+    category: 'filesystem',
   },
   {
     id: 'info-rm-many',

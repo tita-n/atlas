@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import type { PermissionRule, RiskTier } from './rules.schema.js';
+import type { PermissionRule, RiskCategory, RiskTier } from './rules.schema.js';
 import { sudoersRuleExists } from './sudoers-setup.js';
 import { DEFAULT_PERMISSION_RULES, HARD_DENY_RULES } from './default-rules.js';
 import { RuleEngine, type RuleEvaluation } from './rule-engine.js';
@@ -39,6 +39,13 @@ export interface RiskAssessment {
   requiresConfirmation: boolean;
   /** Whether this sudo command still needs the explicit setup flow. */
   sudoSetupRequired: boolean;
+  /**
+   * What kind of thing this is, when the matched rule declares one.
+   *
+   * Purely descriptive. It exists so scoped approval has something to compare a
+   * user-approved scope against; it takes no part in the decision above.
+   */
+  category?: RiskCategory;
 }
 
 const DEFAULT_ALLOW_RULE: PermissionRule = {
@@ -97,6 +104,10 @@ const UNKNOWN_COMMAND_RULE: PermissionRule = {
   tier: 2,
   description:
     'The command could not be safely classified and requires confirmation.',
+  // Deliberately uncategorised, and must stay that way. This is the catch-all
+  // for anything the classifier did not recognise; giving it a category would
+  // let an approved scope quietly cover arbitrary unknown commands, which is
+  // precisely the hole scoped approval exists to avoid.
 };
 
 const SAFE_BIN_RULE: PermissionRule = {
@@ -374,6 +385,9 @@ const SENSITIVE_READ_RULE: PermissionRule = {
   tier: 2,
   description:
     'Reading this file would send a credential or key to the model provider.',
+  // Deliberately not filesystem: approving filesystem changes must never be
+  // read as approving credential reads.
+  category: 'secrets',
 };
 
 /** Returns whether a dnf command is inside the narrow safe package policy. */
@@ -441,6 +455,11 @@ function assessmentFromEvaluation(
     reason: evaluation.matchedRule.description,
     requiresConfirmation: evaluation.decision === 'ask' && tier === 2,
     sudoSetupRequired,
+    // Omitted rather than null when the rule has no category, so an
+    // uncategorised command is unambiguously "not classified".
+    ...(evaluation.matchedRule.category === undefined
+      ? {}
+      : { category: evaluation.matchedRule.category }),
   };
 }
 

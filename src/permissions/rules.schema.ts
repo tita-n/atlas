@@ -18,6 +18,28 @@ export const permissionDecisionSchema = z.enum(['deny', 'ask', 'allow']);
 export type PermissionDecision = z.infer<typeof permissionDecisionSchema>;
 
 /** One glob-style permission rule. */
+/**
+ * What kind of thing a rule flags.
+ *
+ * Closed vocabulary on purpose: a free-text label would let a rule be filed
+ * under a scope the user never approved. `secrets` is separate from
+ * `filesystem` specifically so that approving filesystem changes cannot silently
+ * permit reading credentials.
+ */
+export const riskCategorySchema = z.enum([
+  'filesystem',
+  'secrets',
+  'network',
+  'services',
+  'packages',
+  'processes',
+  'vcs',
+  'atlas-self',
+]);
+
+/** A typed risk category. */
+export type RiskCategory = z.infer<typeof riskCategorySchema>;
+
 export const permissionRuleSchema = z
   .object({
     id: z.string().trim().min(1).max(100),
@@ -25,6 +47,14 @@ export const permissionRuleSchema = z
     decision: permissionDecisionSchema,
     tier: riskTierSchema,
     description: z.string().trim().min(1).max(300),
+    /**
+     * Optional label for scoped approval.
+     *
+     * Absent means uncategorised, which is treated as out of scope and still
+     * asks. Absent is the safe default, so a rule nobody has classified keeps
+     * the old behaviour rather than gaining a silent exemption.
+     */
+    category: riskCategorySchema.optional(),
   })
   .strict();
 
