@@ -1,5 +1,6 @@
 import type { LLMProvider } from '../providers/provider.interface.js';
 import type { RiskAssessment } from './risk-classifier.js';
+import { shouldAsk, type AutonomyLevel } from './autonomy.js';
 
 /** Default typed safe phrase used until voice verification exists. */
 export const DEFAULT_CONFIRMATION_PHRASE = 'ATLAS CONFIRM';
@@ -43,6 +44,28 @@ export type TextConfirmation = (
 
 /** Optional dependencies for confirmation flow. */
 export interface ConfirmationFlowOptions {
+  /**
+   * Whether this command must stop for a human regardless of autonomy level.
+   *
+   * Consulted before anything else, so no level - including unattended - can
+   * wave through an unrecoverable action or an edit to Atlas's own safety
+   * configuration. Returning false lets the configured level decide.
+   */
+  hardFloor?: ((command: string) => boolean) | undefined;
+
+  /**
+   * Autonomy level in force.
+   *
+   * Decides whether a dangerous-but-recoverable command still needs a person.
+   * The hard floor is checked first and cannot be influenced by this.
+   */
+  autonomy?:
+    | {
+        readonly level: AutonomyLevel;
+        readonly scopedCategories?: readonly string[] | undefined;
+      }
+    | undefined;
+
   /** Existing provider used only to explain commands. */
   provider: LLMProvider;
   /** Model used for explanation requests. */
@@ -71,6 +94,8 @@ export class ConfirmationFlow {
   readonly #phrase: string;
   readonly #tier3DelayMs: number;
   readonly #wait: (milliseconds: number) => Promise<void>;
+  readonly #hardFloor: ((command: string) => boolean) | undefined;
+  readonly #autonomy: ConfirmationFlowOptions['autonomy'];
 
   public constructor(options: ConfirmationFlowOptions) {
     this.#provider = options.provider;
@@ -80,6 +105,11 @@ export class ConfirmationFlow {
     this.#signal = options.signal;
     this.#phrase = options.phrase ?? DEFAULT_CONFIRMATION_PHRASE;
     this.#tier3DelayMs = options.tier3DelayMs ?? 1500;
+    // Assigned here, not only declared: leaving these unset made every read
+    // resolve to undefined, so the hard-floor branch never ran and the
+    // autonomy level silently degraded to the most conservative default.
+    this.#hardFloor = options.hardFloor;
+    this.#autonomy = options.autonomy;
     this.#wait =
       options.wait ??
       ((milliseconds) =>
@@ -150,6 +180,32 @@ export class ConfirmationFlow {
       );
     }
 
+    // Checked BEFORE the tier-3 auto-allow and before any autonomy level.
+    // Tier 3 used to short-circuit here, which meant a tier-3 command that
+    // happened to touch Atlas's own configuration was allowed unprompted.
+    // There must be no early return above this point that skips it.
+    if (this.#hardFloor?.(command) === true) {
+      // Uses the configured phrase rather than a hardcoded one, so a user who
+      // changed the confirmation word still gets the prompt they expect.
+      const answer = await this.#confirmText({
+        command,
+        explanation,
+        phrase: this.#phrase,
+        sudoSetupRequired: assessment.sudoSetupRequired,
+      });
+      const choice: ConfirmationChoice =
+        typeof answer === 'boolean' ? (answer ? 'once' : 'deny') : answer;
+      return {
+        approved: choice !== 'deny',
+        choice,
+        explanation,
+        confirmationRequested: true,
+        informational: false,
+      };
+    }
+
+    // Danger is decided by the classifier; this only decides whether a person is
+    // asked. The hard floor has already had its say above.
     if (assessment.tier === 3) {
       await this.#wait(this.#tier3DelayMs);
       return {
@@ -161,7 +217,20 @@ export class ConfirmationFlow {
       };
     }
 
-    if (!assessment.requiresConfirmation) {
+    if (
+      !assessment.requiresConfirmation ||
+      !shouldAsk({
+        level: this.#autonomy?.level ?? 'confirm-everything',
+        tier: assessment.tier,
+        command,
+        ...(assessment.category === undefined
+          ? {}
+          : { category: assessment.category }),
+        ...(this.#autonomy?.scopedCategories === undefined
+          ? {}
+          : { scopedCategories: this.#autonomy.scopedCategories }),
+      })
+    ) {
       return {
         approved: true,
         choice: 'once',

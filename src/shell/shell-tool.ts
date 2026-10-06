@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { AuditLog } from '../audit/audit-log.js';
 import type { ConfirmationFlow } from '../permissions/confirmation-flow.js';
+import type { GatePath } from '../audit/audit-log.schema.js';
+
+import { describeCommand, planDryRun } from '../permissions/dry-run.js';
+import type { RiskAssessment } from '../permissions/risk-classifier.js';
 import type { RiskClassifier } from '../permissions/risk-classifier.js';
 import type { PermissionGrantStore } from '../permissions/grant-store.js';
 import type {
@@ -14,6 +18,14 @@ import { maxToolOutputChars, truncateToolOutput } from './output-limit.js';
 
 const shellArgumentsSchema = z.object({
   command: z.string().trim().min(1).max(20_000),
+  /**
+   * Preview the command instead of running it.
+   *
+   * A preview never executes the command as written. Where the tool has a
+   * genuine native preview flag, that is used; otherwise Atlas describes the
+   * command and runs nothing.
+   */
+  dryRun: z.boolean().optional(),
 });
 
 /** Dependencies for the harness-owned shell tool. */
@@ -33,6 +45,24 @@ export interface ShellToolOptions {
   /** Optional user-facing notice callback. */
   onNotice?: ((message: string) => void) | undefined;
   /**
+   * Which gate path is currently active, recorded with every audit entry.
+   *
+   * While voice is paused the gate accepts a typed safe word with no voice
+   * verification. Recording which path approved a command is what makes that
+   * interim period reviewable instead of invisible.
+   */
+  gatePath?: GatePath | undefined;
+  /**
+   * The autonomy level currently in force, stamped onto every audit row.
+   *
+   * A function rather than a value so a level changed mid-session is reflected
+   * without rebuilding the tool.
+   */
+  autonomy?:
+    (() => 'confirm-everything' | 'scoped-approval' | 'unattended') | undefined;
+  /** Runs a command in preview mode; absent disables dry-run entirely. */
+  dryRun?: ((command: string) => Promise<string>) | undefined;
+  /**
    * Called just before a command runs, so the REPL can show that work is in
    * flight instead of leaving the terminal silent.
    */
@@ -51,6 +81,10 @@ export class ShellTool implements ToolExecutor {
   readonly #grantStore: PermissionGrantStore | undefined;
   readonly #onNotice: ((message: string) => void) | undefined;
   readonly #onActivity: ((message: string) => void) | undefined;
+  readonly #gatePath: GatePath | undefined;
+  readonly #dryRun: ((command: string) => Promise<string>) | undefined;
+  readonly #autonomy:
+    (() => 'confirm-everything' | 'scoped-approval' | 'unattended') | undefined;
   #signal: AbortSignal | undefined;
 
   public constructor(options: ShellToolOptions) {
@@ -58,6 +92,9 @@ export class ShellTool implements ToolExecutor {
     this.#classifier = options.classifier;
     this.#confirmation = options.confirmation;
     this.#auditLog = options.auditLog;
+    this.#gatePath = options.gatePath;
+    this.#dryRun = options.dryRun;
+    this.#autonomy = options.autonomy;
     this.#name = options.name ?? 'shell';
     this.#grantStore = options.grantStore;
     this.#onNotice = options.onNotice;
@@ -95,6 +132,56 @@ export class ShellTool implements ToolExecutor {
     };
   }
 
+  /**
+   * Previews a command and records that it was only previewed.
+   *
+   * Deliberately does not consult the permission gate: previewing is always
+   * safe and must stay available for exactly the commands you want to check
+   * before deciding about them.
+   */
+  async #preview(
+    command: string,
+    assessment: RiskAssessment,
+    timestamp: string,
+  ): Promise<ToolExecutionResult> {
+    const plan = planDryRun(command);
+    const lines = [`Preview only — "${command}" was not executed.`];
+    lines.push(describeCommand(command));
+    let output = '';
+    if (plan.method === 'native' && this.#dryRun !== undefined) {
+      try {
+        output = await this.#dryRun(plan.command);
+      } catch (error) {
+        output = `The native preview could not be completed: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+    }
+    if (plan.caveat !== undefined) lines.push(plan.caveat);
+    if (output !== '') {
+      lines.push(
+        plan.method === 'native'
+          ? `native preview (${plan.command}):`
+          : 'description:',
+        output.trim(),
+      );
+    }
+    this.#auditLog.append({
+      timestamp,
+      command,
+      summary: describeCommand(command),
+      riskTier: assessment.tier,
+      matchedRule: assessment.matchedRule.id,
+      decision: 'previewed',
+      outcome: 'previewed-only',
+      exitCode: null,
+      durationMs: null,
+      gatePath: null,
+      autonomy: this.#autonomy?.() ?? 'confirm-everything',
+    });
+    return { content: lines.join('\n') };
+  }
+
   /** Executes one model-requested command after permission and audit handling. */
   public async execute(toolCall: ToolCall): Promise<ToolExecutionResult> {
     if (toolCall.name !== this.#name) {
@@ -119,6 +206,12 @@ export class ShellTool implements ToolExecutor {
     const assessment = this.#classifier.assess(command, cwd);
     const timestamp = new Date().toISOString();
 
+    // Preview runs before any gate: seeing what a command would do must not
+    // require approving it first, and a preview never executes the command.
+    if (parsed.data.dryRun === true && this.#dryRun !== undefined) {
+      return await this.#preview(command, assessment, timestamp);
+    }
+
     if (assessment.tier === 1 || assessment.decision === 'deny') {
       this.#auditLog.append({
         timestamp,
@@ -126,7 +219,9 @@ export class ShellTool implements ToolExecutor {
         riskTier: assessment.tier,
         matchedRule: assessment.matchedRule.id,
         decision: 'blocked',
-        outcome: 'not executed',
+        outcome: 'denied',
+        gatePath: this.#gatePath ?? 'hard-block',
+        autonomy: this.#autonomy?.() ?? 'confirm-everything',
         exitCode: null,
         durationMs: null,
       });
@@ -174,7 +269,9 @@ export class ShellTool implements ToolExecutor {
             riskTier: assessment.tier,
             matchedRule: assessment.matchedRule.id,
             decision: 'asked-denied',
-            outcome: 'not executed',
+            outcome: 'denied',
+            gatePath: this.#gatePath ?? 'text-safe-word',
+            autonomy: this.#autonomy?.() ?? 'confirm-everything',
             exitCode: null,
             durationMs: null,
           });
@@ -194,7 +291,9 @@ export class ShellTool implements ToolExecutor {
           riskTier: assessment.tier,
           matchedRule: assessment.matchedRule.id,
           decision: 'asked-denied',
-          outcome: 'confirmation failed',
+          outcome: 'denied',
+          gatePath: this.#gatePath ?? 'text-safe-word',
+          autonomy: this.#autonomy?.() ?? 'confirm-everything',
           exitCode: null,
           durationMs: null,
         });
@@ -223,9 +322,14 @@ export class ShellTool implements ToolExecutor {
         decision: assessment.requiresConfirmation
           ? 'asked-approved'
           : 'allowed',
-        outcome: result.timedOut
-          ? `timed out after ${result.durationMs}ms`
-          : `exit code ${result.exitCode}`,
+        gatePath: assessment.requiresConfirmation
+          ? (this.#gatePath ?? 'text-safe-word')
+          : 'auto-allow',
+        autonomy: this.#autonomy?.() ?? 'confirm-everything',
+        // The exit code and duration live in their own columns, so the
+        // outcome is a queryable state rather than a sentence.
+        outcome:
+          result.timedOut || result.exitCode !== 0 ? 'failed' : 'succeeded',
         exitCode: result.exitCode,
         durationMs: result.durationMs,
       });
@@ -270,7 +374,13 @@ export class ShellTool implements ToolExecutor {
         decision: assessment.requiresConfirmation
           ? 'asked-approved'
           : 'allowed',
-        outcome: 'shell execution error',
+        // A failure to execute is still a decision the gate made, so it names
+        // the path that made it rather than dropping the attribution.
+        gatePath: assessment.requiresConfirmation
+          ? (this.#gatePath ?? 'text-safe-word')
+          : 'auto-allow',
+        autonomy: this.#autonomy?.() ?? 'confirm-everything',
+        outcome: 'failed',
         exitCode: null,
         durationMs: null,
       });

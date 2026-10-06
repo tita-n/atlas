@@ -25,6 +25,7 @@ import { sudoersRuleExists } from '../permissions/sudoers-setup.js';
 import { PermissionGrantStore } from '../permissions/grant-store.js';
 import { RiskClassifier } from '../permissions/risk-classifier.js';
 import { ConfirmationFlow } from '../permissions/confirmation-flow.js';
+import { hardFloorVerdict, loadAutonomy } from '../permissions/autonomy.js';
 import type { TextConfirmationResult } from '../permissions/confirmation-flow.js';
 import { createProvider } from '../providers/provider-factory.js';
 import type { LLMProvider, ToolCall } from '../providers/provider.interface.js';
@@ -269,9 +270,16 @@ export async function createAssistantRuntime(
       permissionConfig.confirmationPhrase === ''
         ? 'ATLAS CONFIRM'
         : permissionConfig.confirmationPhrase;
+    const autonomy = await loadAutonomy(assistantConfig.homeDirectory);
+    const home = process.env.HOME;
+
     const confirmation = new ConfirmationFlow({
       provider,
       model: config.model,
+      // Unrecoverable actions and edits to Atlas's own safety configuration
+      // always stop for a human, whatever the configured level says.
+      hardFloor: (command) => hardFloorVerdict(command, { home }).applies,
+      autonomy: { level: autonomy.level },
       phrase: confirmationPhrase,
       confirmText: async (): Promise<TextConfirmationResult> => {
         if (assistantConfig.textConfirmMode === 'block') return 'deny';
@@ -284,13 +292,31 @@ export async function createAssistantRuntime(
 
     shellSession = new ShellSession();
     shellSession.restart();
+    const sessionForShell = shellSession;
     const shellTool = new ShellTool({
-      session: shellSession,
+      session: sessionForShell,
       classifier,
       confirmation,
       auditLog: new AuditLog(database),
       name: 'shell',
       grantStore,
+      // Records which gate approved a dangerous command, so the interim
+      // typed-safe-word period is reviewable after the fact.
+      gatePath:
+        assistantConfig.textConfirmMode === 'block'
+          ? 'hard-block'
+          : 'text-safe-word',
+      // Every audit row records the level in force, so an unattended run is
+      // distinguishable in review from a supervised one.
+      autonomy: () => autonomy.level,
+      // Dry-run reuses the same permission-checked execution path, so a
+      // preview cannot become a way around the classifier.
+      dryRun: async (command: string): Promise<string> => {
+        // Bound to the session already created above, so a preview and a real
+        // execution share one working directory.
+        const result = await sessionForShell.execute(command);
+        return result.stdout + result.stderr;
+      },
     });
 
     const resuming = options.newConversation
