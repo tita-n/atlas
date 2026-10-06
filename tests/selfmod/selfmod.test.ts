@@ -176,10 +176,10 @@ describe('health and rollback', () => {
       args[0] === 'status'
         ? { ok: true, stdout: ' M src/tui/App.tsx\n', stderr: '' }
         : { ok: true, stdout: 'abc', stderr: '' };
-    expect(requireCleanTree(dirty).ok).toBe(false);
-    expect(
-      requireCleanTree(dirty).ok === false && !requireCleanTree(dirty),
-    ).toBe(false);
+    const refusal = requireCleanTree(dirty);
+    expect(refusal.ok).toBe(false);
+    expect(refusal).toHaveProperty('reason');
+    expect(JSON.stringify(refusal)).toContain('uncommitted');
   });
 
   it('allows the precondition on a clean tree', () => {
