@@ -90,3 +90,56 @@ Ordered roughly by how much damage they could do.
 - Provider misbehaviour (HTTP 200 with an error body, garbage non-JSON, empty
   content, `tool_calls` with empty content) is handled with a visible error
   rather than a silent empty turn.
+
+---
+
+# TUI v2 QA pass (recovered from an agent transcript)
+
+A quality agent over the interaction-model rebuild timed out before writing its
+report. Findings below were extracted from its transcript; the two serious ones
+were then **reproduced and fixed by hand**, and the fixes were re-verified.
+
+## CRITICAL — Enter approved a dangerous command. FIXED.
+
+With the two-option confirmation modal open, pressing Enter ran the command.
+
+Root cause: the highlight index started at `0`, which is the _approving_
+option. A comment in the code claimed Enter "defaults to cancel", so the bug
+was documented as safe while behaving the opposite way.
+
+Fixed: the highlight now starts on the non-approving option, so Enter can
+refuse but never approve. Approval requires a deliberate press of its own key.
+
+Re-verified through the real TUI, confirmed in the audit log:
+
+    key=Enter -> asked-denied   (no execution)
+    key=y     -> asked-approved, exit 0
+    key=n     -> asked-denied
+
+## HIGH — the prompt queue dropped and reordered prompts. FIXED.
+
+A separate cursor indexed the same array that was simultaneously being sliced,
+so the two desynchronized: prompts were silently dropped, ran out of order, and
+could leave the queue permanently stuck.
+
+Fixed: the queue array is the only source of ordering; there is no cursor.
+
+Re-verified — three prompts typed during a turn all ran, in order:
+
+    first question / second question / third question
+
+## Verified correct by the agent (no action)
+
+- `/model` genuinely switches the model: the provider received the newly
+  selected model on the next request.
+- `/init` never leaks the API key, on the success path or the failure path —
+  zero occurrences of the typed key anywhere in the captured terminal output.
+- `NO_COLOR` emits zero SGR colour codes.
+
+## Harness flaw the agent caught in my own tooling
+
+The pty driver hardcoded `TERM=xterm-256color`, so `TERM=dumb` had never
+actually been exercised. The driver now honours `FORCE_TERM`.
+
+Re-tested with `TERM=dumb`: zero SGR codes, the confirmation modal still
+renders, the command is still shown, and the decision still lands correctly.
