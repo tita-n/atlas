@@ -1,15 +1,17 @@
 /**
  * A completed or in-flight turn in the scrollback.
  *
- * Narration and detail are rendered as separate visual regions with separate
- * prefixes, which is what lets a reader tell at a glance which is which:
- * narration is plain wrapped prose, detail is a bordered panel.
+ * Narration and tool activity are different kinds of object, not two styles of
+ * text: prose is written out, and each tool call is its own block with its own
+ * collapsed and expanded state. That is what makes the separation usable rather
+ * than merely visible.
  */
 import React from 'react';
 import { Box, Text } from 'ink';
 
 import { tint, type Palette } from '../theme.js';
-import { DetailPanel } from './DetailPanel.js';
+import { ToolBlock, type ToolBlockView } from './ToolBlock.js';
+import type { TurnToolCall } from '../../conversation/session.js';
 
 export interface TurnView {
   /** Discriminates this from the splash when both share a scrollback array. */
@@ -21,14 +23,21 @@ export interface TurnView {
   readonly detail: string;
   /** True until the turn finishes, which dims the narration slightly. */
   readonly pending: boolean;
+  /** Tool calls executed during the turn, for their own blocks. */
+  readonly toolCalls?: readonly TurnToolCall[] | undefined;
 }
 
 export interface TranscriptTurnProps {
   readonly turn: TurnView;
   readonly palette: Palette;
   readonly color: boolean;
-  readonly detailExpanded: boolean;
-  readonly onToggleDetail: () => void;
+  /** Rendered tool blocks for this turn. */
+  readonly toolViews: readonly ToolBlockView[];
+  /** Tool ids the user has expanded. */
+  readonly expandedIds: ReadonlySet<string>;
+  /** The tool block currently accepting a keypress; only it is interactive. */
+  readonly focusedTool: string | null;
+  readonly onToggleTool: (toolId: string) => void;
   /**
    * Hides the user's line. Used for the in-flight turn in the live region:
    * the user has just typed it, and it is reprinted in scrollback when the
@@ -41,8 +50,10 @@ export function TranscriptTurn({
   turn,
   palette,
   color,
-  detailExpanded,
-  onToggleDetail,
+  toolViews,
+  expandedIds,
+  focusedTool,
+  onToggleTool,
   hideUser = false,
 }: TranscriptTurnProps): React.JSX.Element {
   return (
@@ -69,15 +80,19 @@ export function TranscriptTurn({
         </Box>
       ) : null}
 
-      {turn.detail !== '' ? (
-        <DetailPanel
-          detail={turn.detail}
+      {toolViews.map((tool) => (
+        <ToolBlock
+          key={tool.id}
+          call={tool}
           palette={palette}
           color={color}
-          expanded={detailExpanded}
-          onToggle={onToggleDetail}
+          expanded={expandedIds.has(tool.id)}
+          focused={focusedTool === tool.id}
+          onToggle={() => {
+            onToggleTool(tool.id);
+          }}
         />
-      ) : null}
+      ))}
     </Box>
   );
 }

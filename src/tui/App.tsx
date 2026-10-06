@@ -1,15 +1,22 @@
 /**
  * The Atlas terminal interface.
  *
- * A rendering and interaction layer over the Phase 4 assistant session. It
- * owns no conversation, memory, or permission logic: it submits text to
- * `session.handleInput` and renders the `TurnResult` it gets back.
+ * A rendering and interaction layer over the Phase 4 assistant session. It owns
+ * no conversation, memory, or permission logic: it submits text to the session
+ * and renders what comes back.
  *
- * Layout intent:
- *   - completed turns are printed permanently, so scrollback stays readable
- *     and does not reflow as the live region updates;
- *   - the live region at the bottom holds the state indicator, any in-flight
- *     turn, and the input line.
+ * The interaction model, rather than the styling, is the point of this file:
+ *
+ *   - a decision that needs an answer gets a modal of its own, so it cannot be
+ *     scrolled past and mistaken for something Atlas said;
+ *   - `/` is a discovery mechanism, not syntax to memorise;
+ *   - provider, model, turn count, and tokens are always visible;
+ *   - each tool call is its own block with a live status, collapsed by default;
+ *   - prompts typed while a turn is running are queued rather than discarded.
+ *
+ * Everything decorative stays optional. Colour and motion are layered on top of
+ * text labels and borders, so the interface works identically with NO_COLOR, on
+ * a dumb terminal, and under a screen reader.
  */
 import React, {
   useCallback,
@@ -20,39 +27,121 @@ import React, {
 } from 'react';
 import { Box, Static, Text, useApp, useInput } from 'ink';
 
-import { runAssistantCommand } from '../conversation/assistant-commands.js';
+import {
+  runAssistantCommand,
+  filterAssistantCommands,
+  type AssistantCommandSpec,
+} from '../conversation/assistant-commands.js';
+import { describeToolCall } from '../conversation/narration.js';
 import type { AssistantRuntime } from '../conversation/assistant-runtime.js';
+import type { TurnToolCall } from '../conversation/session.js';
+import {
+  formatPrice,
+  loadRegistry,
+  type ModelInfo,
+  type ProviderInfo,
+  type RegistrySnapshot,
+} from '../providers/model-registry.js';
 import { resolveTheme, tint, type Palette } from './theme.js';
 import { describeState, type AssistantState } from './states.js';
-import { revealText } from './reveal.js';
+import {
+  emptyStats,
+  recordToolCall,
+  recordTurn,
+  type SessionStats,
+} from './session-stats.js';
+import type { ToolStatus } from './tool-blocks.js';
 import { StatusBar } from './components/StatusBar.js';
 import { TranscriptTurn, type TurnView } from './components/TranscriptTurn.js';
-import { Composer, ConfirmationPrompt } from './components/Composer.js';
+import { Composer } from './components/Composer.js';
 import { Wordmark } from './components/Wordmark.js';
-import { describeToolCall } from '../conversation/narration.js';
-import type { TuiBridge } from './bridge.js';
-
-/** A confirmation gate the assistant is blocked on. */
-interface PendingConfirmation {
-  readonly phrase: string;
-  resolve: (approved: boolean) => void;
-}
+import { CommandPalette } from './components/CommandPalette.js';
+import { ConfirmModal } from './components/ConfirmModal.js';
+import { ModelPicker, type ProviderGroup } from './components/ModelPicker.js';
+import {
+  InitWizard,
+  PROVIDER_OPTIONS,
+  maskKey,
+  type WizardStep,
+} from './components/InitWizard.js';
+import { StatusFooter } from './components/StatusFooter.js';
+import type { ToolBlockView } from './components/ToolBlock.js';
+import type { GateDecision, TuiBridge } from './bridge.js';
 
 /** A permanent scrollback entry: the splash, or a finished turn. */
 type StaticItem = { readonly kind: 'splash' } | TurnView;
 
+/**
+ * Rows shown per vendor in the /model picker. The picker renders every row it
+ * is handed, and the largest catalogue in the dataset is 610 models, so an
+ * uncapped group would bury the manual entry that keeps /model usable.
+ */
+const MODELS_PER_PROVIDER = 12;
+
+/**
+ * Picks a vendor's models for the picker: at most `MODELS_PER_PROVIDER` of
+ * them, with the configured model kept even when it falls outside that window
+ * (vendors are ordered by context window, not by what the user is using).
+ */
+function pickModels(
+  provider: ProviderInfo,
+  activeModel: string,
+): readonly ModelInfo[] {
+  const all = provider.models;
+  if (all.length <= MODELS_PER_PROVIDER) return all;
+  const active = all.find((entry) => entry.id === activeModel);
+  if (active === undefined) return all.slice(0, MODELS_PER_PROVIDER);
+  const head = all.slice(0, MODELS_PER_PROVIDER).filter((e) => e !== active);
+  return [active, ...head].slice(0, MODELS_PER_PROVIDER);
+}
+
+/** Which modal, if any, owns the keyboard. */
+type ModalKind = 'none' | 'confirm' | 'palette' | 'model' | 'init';
+
+interface PendingGate {
+  readonly phrase: string;
+  readonly command: string;
+  readonly reason?: string | undefined;
+  resolve: (decision: GateDecision) => void;
+}
+
+/** A tool call as it moves through its lifecycle, including before a turn ends. */
+interface LiveTool {
+  readonly id: string;
+  readonly name: string;
+  readonly command: string;
+  status: ToolStatus;
+  detail: string;
+  exitCode?: number | null | undefined;
+  durationMs?: number | undefined;
+  expanded: boolean;
+}
+
 export interface AtlasAppProps {
   readonly runtime: AssistantRuntime;
-  /** Shared callbacks for the confirmation gate and tool observer. */
   readonly bridge: TuiBridge;
-  /** Overrides for tests. */
   readonly animate?: boolean;
+  /** Overrides for tests. */
   readonly paletteOverride?: Palette;
   readonly colorOverride?: boolean;
   readonly resumed?: boolean;
+  /** Known context window; omitted rather than guessed. */
+  readonly contextWindow?: number | undefined;
+  /** Validates a provider key. Kept injectable so tests never hit a network. */
+  readonly validateKey?: (
+    provider: string,
+    key: string,
+  ) => Promise<{ ok: boolean; message?: string }>;
+  /** Persists a validated configuration. */
+  readonly saveConfig?: (input: {
+    provider: string;
+    apiKey: string;
+    model: string;
+  }) => Promise<void>;
 }
 
 let turnCounter = 0;
+let toolCounter = 0;
 
 export function AtlasApp({
   runtime,
@@ -61,6 +150,9 @@ export function AtlasApp({
   paletteOverride,
   colorOverride,
   resumed,
+  contextWindow,
+  validateKey,
+  saveConfig,
 }: AtlasAppProps): React.JSX.Element {
   const { exit } = useApp();
   const theme = useMemo(() => resolveTheme({}), []);
@@ -71,70 +163,150 @@ export function AtlasApp({
   const [turns, setTurns] = useState<readonly TurnView[]>([]);
   const [state, setState] = useState<AssistantState>('idle');
   const [input, setInput] = useState('');
-  /**
-   * Mirror of the composer text, updated synchronously.
-   *
-   * Input arrives in batches, and a submit can land in the same batch as the
-   * characters before it. State is too late by then; this ref is not.
-   */
-  const inputRef = useRef('');
-  const [detailExpanded, setDetailExpanded] = useState(false);
-  const [gate, setGate] = useState<PendingConfirmation | null>(null);
-  const [detail, setDetail] = useState<string | undefined>(undefined);
-  const [liveNotice, setLiveNotice] = useState<string>('');
   const [busy, setBusy] = useState(false);
-  // The turn in flight. Lives in the live region, not in scrollback, until it
-  // completes.
   const [pendingTurn, setPendingTurn] = useState<TurnView | null>(null);
-  // Notices the runtime raised before this component existed.
+  const [liveNotice, setLiveNotice] = useState('');
+  const [modal, setModal] = useState<ModalKind>('none');
+  const [gate, setGate] = useState<PendingGate | null>(null);
+  const [statusDetail, setStatusDetail] = useState<string | undefined>(
+    undefined,
+  );
+  const [stats, setStats] = useState<SessionStats>(emptyStats);
+  const [model, setModelState] = useState(runtime.config.model);
+  const [liveTools, setLiveTools] = useState<readonly LiveTool[]>([]);
+  const [expandedTools, setExpandedTools] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const [focusedTool, setFocusedTool] = useState<string | null>(null);
+  /** Prompts typed while a turn is running, sent in order afterwards. */
+  const [queue, setQueue] = useState<readonly string[]>([]);
+
+  // Wizard state
+  const [wizardStep, setWizardStep] = useState<WizardStep>('provider');
+  const [wizardProvider, setWizardProvider] = useState(0);
+  const [wizardKey, setWizardKey] = useState('');
+  const [wizardMessage, setWizardMessage] = useState<string | undefined>(
+    undefined,
+  );
+
+  const inputRef = useRef('');
+  const gateRef = useRef<PendingGate | null>(null);
+  gateRef.current = gate;
   const [startupNotices] = useState<readonly string[]>(() =>
     bridge.drainNotices(),
   );
 
-  // The open gate, held in a ref as well as state: `submit` must read the
-  // current gate without being rebuilt around it.
-  const gateRef = useRef<PendingConfirmation | null>(null);
-  gateRef.current = gate;
+  // The provider/model catalogue comes from models.dev, cached on disk. A
+  // failure here must never block the interface: it degrades to whatever is
+  // cached, and manual entry keeps working.
+  const [registry, setRegistry] = useState<RegistrySnapshot>({
+    providers: [],
+    fetchedAt: 0,
+    source: 'cache',
+  });
+  const [registryNotice, setRegistryNotice] = useState<string | undefined>(
+    undefined,
+  );
+  const [registryLoading, setRegistryLoading] = useState(true);
 
-  // Publish the handlers the runtime was constructed with. The runtime exists
-  // before this component mounts, so it is handed these callbacks now.
   useEffect(() => {
-    bridge.onGate = (phrase: string): Promise<boolean> =>
-      new Promise<boolean>((resolve) => {
+    let cancelled = false;
+    void (async () => {
+      const result = await loadRegistry({
+        atlasHome: runtime.assistantConfig.homeDirectory,
+      });
+      if (cancelled) return;
+      setRegistry(result.snapshot);
+      setRegistryLoading(false);
+      if (result.stale) {
+        setRegistryNotice(
+          result.snapshot.providers.length === 0
+            ? `could not reach models.dev (${
+                result.error ?? 'unknown error'
+              }); manual entry still works`
+            : `models.dev unreachable; showing a cached list`,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runtime.assistantConfig.homeDirectory]);
+
+  // Publish the handlers the runtime was constructed with.
+  useEffect(() => {
+    bridge.onGate = (request): Promise<GateDecision> =>
+      new Promise<GateDecision>((resolve) => {
+        bridge.pendingCommand = request.command;
+        bridge.pendingReason = request.reason;
         setState('awaiting-confirmation');
-        setGate({ phrase, resolve });
+        setModal('confirm');
+        setGate({
+          phrase: request.phrase,
+          command:
+            request.command === ''
+              ? (bridge.pendingCommand ?? '')
+              : request.command,
+          ...(request.reason === undefined ? {} : { reason: request.reason }),
+          resolve,
+        });
       });
     bridge.onToolStart = (call): void => {
+      const id = `tool-${(toolCounter += 1)}`;
+      const command = safeDescribe(call);
+      // Published before execution so the confirmation modal can name what it
+      // is approving, rather than asking about an unnamed action.
+      bridge.pendingCommand = command;
+      setLiveTools((previous) => [
+        ...previous,
+        {
+          id,
+          name: call.name,
+          command,
+          status: 'running',
+          detail: '',
+          expanded: false,
+        },
+      ]);
+      setFocusedTool(id);
       setState('executing');
-      setDetail(describeToolCall(call));
+      setStatusDetail(command);
+      setStats(recordToolCall);
     };
     return (): void => {
-      // Restore the conservative defaults so a torn-down app can never leave
-      // the runtime waiting on a handler that no longer exists.
-      bridge.onGate = () => Promise.resolve(false);
+      bridge.onGate = () => Promise.resolve('deny');
       bridge.onToolStart = () => undefined;
     };
   }, [bridge]);
 
-  // Restores the idle indicator when a turn finishes or a gate closes.
-  useEffect(() => {
-    if (!busy && gate === null && state !== 'idle') setState('idle');
-  }, [busy, gate, state]);
+  // Fold a finished turn's tool calls into the transcript.
+  const finishTools = useCallback((calls: readonly TurnToolCall[]): void => {
+    setLiveTools((previous) =>
+      calls.map((call, index) => {
+        const existing = previous[index];
+        return {
+          id: existing?.id ?? `tool-${(toolCounter += 1)}`,
+          name: call.name,
+          command: call.command,
+          status: call.ok ? 'succeeded' : 'failed',
+          detail: call.detail,
+          exitCode: null,
+          durationMs: call.durationMs,
+          expanded: existing?.expanded ?? false,
+        };
+      }),
+    );
+    setFocusedTool(null);
+  }, []);
 
-  /**
-   * Runs one assistant turn.
-   *
-   * The turn lives in the live region while it is in flight and only moves to
-   * scrollback once it is finished. That matters because `<Static>` prints an
-   * item exactly once: adding the turn up front would freeze it at its empty
-   * first frame and the reveal would never be seen.
-   */
   const runTurn = useCallback(
     async (message: string): Promise<void> => {
-      const id = `turn-${(turnCounter += 1)}`;
+      turnCounter += 1;
+      const id = `turn-${turnCounter}`;
       setBusy(true);
       setState('thinking');
-      setDetail(undefined);
+      setStatusDetail(undefined);
+      setLiveTools([]);
       setPendingTurn({
         kind: 'turn',
         id,
@@ -146,15 +318,34 @@ export function AtlasApp({
 
       let narration: string;
       let detailText: string;
+      let usage: { inputTokens: number; outputTokens: number } | undefined;
+      let calls: readonly TurnToolCall[] = [];
       try {
-        const result = await runtime.session.handleInput(message);
-        // An empty reply is a provider failure, not a real answer. Say so
-        // rather than pretending Atlas had nothing to add.
+        const result = await runtime.session.handleInputStreaming(
+          message,
+          (delta) => {
+            // Narration as it is produced, shown in the live turn below. The
+            // guard upstream already withheld anything that could be a payload,
+            // so this text is safe to display immediately.
+            setState('streaming');
+            setPendingTurn((previous) =>
+              previous === null
+                ? previous
+                : {
+                    ...previous,
+                    narration: previous.narration + delta,
+                    pending: false,
+                  },
+            );
+          },
+        );
         narration =
           result.narration === ''
             ? '(no reply came back from the provider; nothing was learned this turn)'
             : result.narration;
         detailText = result.detail;
+        usage = result.usage;
+        calls = result.toolCalls ?? [];
       } catch (error) {
         narration = `Something went wrong: ${
           error instanceof Error ? error.message : String(error)
@@ -162,64 +353,55 @@ export function AtlasApp({
         detailText = '';
       }
 
-      setState('streaming');
-      // The status line keeps the short command label set by the tool
-      // observer; stuffing the whole execution log in there is unreadable.
-
-      // Reveal word by word in the live region so the reply reads as it is
-      // produced rather than appearing all at once.
-      let built = '';
-      if (motion) {
-        for await (const chunk of revealText(narration)) {
-          built += chunk;
-          const snapshot = built;
-          setPendingTurn((previous) =>
-            previous === null
-              ? previous
-              : { ...previous, narration: snapshot, pending: false },
-          );
-        }
-      } else {
-        built = narration;
-        setPendingTurn((previous) =>
-          previous === null
-            ? previous
-            : { ...previous, narration: built, pending: false },
-        );
-      }
-
-      // Finished: commit the complete turn to scrollback exactly once.
+      // The turn is complete before reveal begins: the live region must not
+      // show a half-written turn that the committed one then contradicts.
       setTurns((previous) => [
         ...previous,
         {
           kind: 'turn',
           id,
           user: message,
-          narration: built,
+          narration,
           detail: detailText,
           pending: false,
+          toolCalls: calls,
         },
       ]);
       setPendingTurn(null);
+      setStats((previous) => recordTurn(previous, usage));
       setBusy(false);
+      setState('idle');
     },
-    [runtime, motion],
+    [runtime, finishTools],
   );
+
+  // Send the next queued prompt once the current turn finishes.
+  //
+  // The queue array is the only source of ordering. An earlier version kept a
+  // separate cursor into the same array while also slicing it, which
+  // desynchronized the two: prompts were dropped, ran out of order, and could
+  // leave the queue permanently stuck.
+  useEffect(() => {
+    if (busy) return;
+    const next = queue[0];
+    if (next === undefined) return;
+    setQueue((previous) => previous.slice(1));
+    void runTurn(next);
+  }, [busy, queue, runTurn]);
 
   const submit = useCallback(
     (line: string): void => {
       inputRef.current = '';
       setInput('');
-      // While a gate is open the line answers the gate, not the assistant.
+
       const openGate = gateRef.current;
       if (openGate !== null) {
-        const approved =
-          line.trim().toUpperCase() === openGate.phrase.toUpperCase();
-        setGate(null);
-        setState('executing');
-        openGate.resolve(approved);
+        // The modal owns the keyboard while a gate is open; reaching here means
+        // the user typed anyway, which must never count as approval.
         return;
       }
+
+      if (line === '') return;
 
       const command = runAssistantCommand(line, {
         facts: runtime.facts,
@@ -233,63 +415,236 @@ export function AtlasApp({
         setLiveNotice(command.text);
         return;
       }
-      setLiveNotice('');
-      void runTurn(command.message);
+      if (command.kind === 'prose') {
+        setLiveNotice('');
+        if (busy) {
+          // Queue rather than drop: a prompt typed mid-turn is a real
+          // request, and losing it is indistinguishable from a hang.
+          setQueue((previous) => [...previous, command.message]);
+          setLiveNotice('queued until the current turn finishes');
+          return;
+        }
+        void runTurn(command.message);
+      }
     },
-    [exit, runtime, runTurn],
+    [exit, runtime, runTurn, busy],
   );
 
-  useInput((value, key) => {
-    if (key.escape) {
-      exit();
-      return;
-    }
-    if (key.ctrl && value === 'c') {
-      exit();
-      return;
-    }
-    if (key.ctrl && value === 'o') {
-      setDetailExpanded((previous) => !previous);
-      return;
-    }
-    if (key.ctrl && value === 'd') {
-      exit();
-      return;
-    }
-    if (key.return) {
-      // Read the ref, not render state: keystrokes and Enter can arrive in one
-      // batch before React re-renders, and a stale read would answer a
-      // confirmation gate with text the user never finished typing.
-      submit(inputRef.current);
-      return;
-    }
-    if (key.backspace || key.delete) {
-      inputRef.current = inputRef.current.slice(0, -1);
-      setInput(inputRef.current);
-      return;
-    }
-    if (key.leftArrow || key.rightArrow || key.upArrow || key.downArrow) {
-      // History navigation is intentionally not wired yet.
-      return;
-    }
-    if (value !== '') {
-      inputRef.current += value;
-      setInput(inputRef.current);
-    }
-  });
+  const closeGate = useCallback((decision: GateDecision): void => {
+    const openGate = gateRef.current;
+    setGate(null);
+    setModal('none');
+    if (openGate !== null) openGate.resolve(decision);
+  }, []);
 
-  // The splash is a permanent part of scrollback; turns join it as they finish.
+  // Live tool output during the current turn, rendered above the composer.
+  const toolBlocks: readonly ToolBlockView[] = liveTools.map((tool) => ({
+    id: tool.id,
+    name: tool.name,
+    command: tool.command,
+    status: tool.status,
+    detail: tool.detail,
+    exitCode: tool.exitCode,
+    durationMs: tool.durationMs,
+  }));
+
+  // The command palette is an overlay on the composer, not a modal over it:
+  // typing must keep going so the query can be filtered as the user types.
+  // Every other modal genuinely owns the keyboard.
+  const composerLocked = modal !== 'none' && modal !== 'palette';
+
+  // The splash is permanent scrollback; turns join it as they finish.
   const staticItems = useMemo<StaticItem[]>(
     () => [{ kind: 'splash' }, ...turns],
     [turns],
   );
 
+  useInput(
+    (value, key) => {
+      // A modal owns the keyboard; the composer must not also act on it. The
+      // palette is exempt because it only completes what is being typed.
+      if (composerLocked) return;
+      if (key.escape) {
+        exit();
+        return;
+      }
+      if (key.ctrl && value === 'c') {
+        exit();
+        return;
+      }
+      if (key.ctrl && value === 'd') {
+        exit();
+        return;
+      }
+      if (key.ctrl && value === 'o') {
+        setExpandedTools((previous) =>
+          previous.size === 0
+            ? new Set(toolBlocks.map((tool) => tool.id))
+            : new Set(),
+        );
+        return;
+      }
+      if (key.return && modal === 'palette') {
+        // The palette selects the highlighted command itself.
+        return;
+      }
+      if (key.return) {
+        // `/model` and `/init` open modals rather than being handled inline.
+        const trimmed = inputRef.current.trim();
+        if (trimmed === '/model') {
+          setModal('model');
+          return;
+        }
+        if (trimmed === '/init') {
+          setWizardStep('provider');
+          setWizardKey('');
+          setModal('init');
+          return;
+        }
+        if (
+          trimmed.startsWith('/') &&
+          filterAssistantCommands(trimmed).length > 0
+        ) {
+          setModal('palette');
+          return;
+        }
+        submit(inputRef.current);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        inputRef.current = inputRef.current.slice(0, -1);
+        setInput(inputRef.current);
+        return;
+      }
+      if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow)
+        return;
+      if (value !== '') {
+        inputRef.current += value;
+        setInput(inputRef.current);
+        // Typing `/` on an empty line opens discovery immediately.
+        if (inputRef.current === '/') setModal('palette');
+      }
+    },
+    { isActive: !composerLocked },
+  );
+
   const descriptor = describeState(state);
+  const paletteOpen = modal === 'palette' && inputRef.current.startsWith('/');
+
+  const chooseCommand = useCallback(
+    (command: AssistantCommandSpec): void => {
+      setModal('none');
+      inputRef.current = `/${command.name}`;
+      setInput(inputRef.current);
+      if (command.opensModal) {
+        if (command.name === 'model') setModal('model');
+        if (command.name === 'init') {
+          setWizardStep('provider');
+          setWizardKey('');
+          setModal('init');
+        }
+        return;
+      }
+      submit(`/${command.name}`);
+    },
+    [submit],
+  );
+
+  const registryMeta = registryLoading
+    ? 'loading models.dev...'
+    : `${registry.providers.length} providers from models.dev`;
+
+  const modelGroups: readonly ProviderGroup[] = useMemo(() => {
+    const groups: ProviderGroup[] = [];
+    // The vendor Atlas is currently configured against, first.
+    const activeVendor = registry.providers.find(
+      (provider) =>
+        provider.baseUrl === runtime.config.baseUrl ||
+        provider.env.some((name) => name === 'ATLAS_API_KEY_ENV'),
+    );
+    const seen = new Set<string>();
+    if (activeVendor !== undefined) {
+      seen.add(activeVendor.id);
+      groups.push({
+        provider: activeVendor.name,
+        models: pickModels(activeVendor, model).map((entry) => ({
+          model: entry.id,
+          contextWindow: entry.context === 0 ? undefined : entry.context,
+          note: formatPrice(entry.pricing) ?? 'no published price',
+        })),
+      });
+    }
+    for (const provider of registry.providers) {
+      if (seen.has(provider.id)) continue;
+      groups.push({
+        provider: provider.name,
+        models: pickModels(provider, model).map((entry) => ({
+          model: entry.id,
+          contextWindow: entry.context === 0 ? undefined : entry.context,
+          note: formatPrice(entry.pricing) ?? 'no published price',
+        })),
+      });
+    }
+    // Always offer manual entry: the registry is community-maintained and a
+    // genuinely new model may not be in it yet.
+    groups.push({
+      provider: 'manual',
+      models: [
+        {
+          model,
+          note: 'active — type any model id if the registry lags',
+        },
+      ],
+    });
+    return groups;
+  }, [registry.providers, runtime.config.baseUrl, model]);
+
+  const submitKey = useCallback(async (): Promise<void> => {
+    if (wizardStep === 'provider') {
+      setWizardStep('key');
+      return;
+    }
+    if (wizardStep !== 'key' || wizardKey === '') return;
+    const option = PROVIDER_OPTIONS[wizardProvider];
+    if (option === undefined) return;
+    setWizardStep('validating');
+    const provider =
+      runtime.config.provider === option.id
+        ? runtime.config.provider
+        : option.id;
+    if (validateKey === undefined) {
+      setWizardStep('done');
+      return;
+    }
+    const result = await validateKey(provider, wizardKey);
+    if (result.ok) {
+      if (saveConfig !== undefined) {
+        await saveConfig({
+          provider,
+          apiKey: wizardKey,
+          model: option.defaultModel,
+        });
+      }
+      // Drop the secret as soon as it is no longer needed.
+      setWizardKey('');
+      setWizardMessage(undefined);
+      setWizardStep('done');
+      return;
+    }
+    setWizardMessage(result.message ?? 'that key was not accepted');
+    setWizardStep('failed');
+  }, [
+    wizardStep,
+    wizardKey,
+    wizardProvider,
+    runtime.config.provider,
+    validateKey,
+    saveConfig,
+  ]);
 
   return (
     <Box flexDirection="column">
-      {/* Printed once and left in scrollback. The splash belongs here rather
-          than in the live region, which would redraw it on every keystroke. */}
+      {/* Printed once and left in scrollback. */}
       <Static items={staticItems}>
         {(item) => {
           if (item.kind === 'splash') {
@@ -311,20 +666,42 @@ export function AtlasApp({
               </Box>
             );
           }
-          if (item.kind !== 'turn') return null;
           return (
             <TranscriptTurn
+              key={item.id}
               turn={item}
               palette={palette}
               color={color}
-              detailExpanded={detailExpanded}
-              onToggleDetail={() => {
-                setDetailExpanded((previous) => !previous);
+              toolViews={(item.toolCalls ?? []).map((call, index) => ({
+                id: `${item.id}-tool-${index}`,
+                name: call.name,
+                command: call.command,
+                status: call.ok ? ('succeeded' as const) : ('failed' as const),
+                detail: call.detail,
+                durationMs: call.durationMs,
+              }))}
+              expandedIds={expandedTools}
+              focusedTool={null}
+              onToggleTool={(toolId) => {
+                setExpandedTools((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(toolId)) next.delete(toolId);
+                  else next.add(toolId);
+                  return next;
+                });
               }}
             />
           );
         }}
       </Static>
+
+      {registryNotice === undefined ? null : (
+        <Box marginBottom={1}>
+          <Text {...tint(color ? palette.caution : undefined)}>
+            {registryNotice}
+          </Text>
+        </Box>
+      )}
 
       {liveNotice !== '' ? (
         <Box flexDirection="column" marginBottom={1}>
@@ -334,46 +711,157 @@ export function AtlasApp({
         </Box>
       ) : null}
 
-      {/* The in-flight turn sits above the status bar in the live region. */}
       {pendingTurn === null ? null : (
         <TranscriptTurn
           turn={pendingTurn}
           palette={palette}
           color={color}
-          detailExpanded={detailExpanded}
-          onToggleDetail={() => {
-            setDetailExpanded((previous) => !previous);
+          toolViews={toolBlocks}
+          expandedIds={expandedTools}
+          focusedTool={focusedTool}
+          onToggleTool={(toolId) => {
+            setExpandedTools((previous) => {
+              const next = new Set(previous);
+              if (next.has(toolId)) next.delete(toolId);
+              else next.add(toolId);
+              return next;
+            });
           }}
           hideUser
         />
       )}
 
-      <Box flexDirection="column">
+      {queue.length > 0 ? (
+        <Box>
+          <Text {...tint(color ? palette.inkFaint : undefined)}>
+            {queue.length} prompt
+            {queue.length === 1 ? '' : 's'} queued
+          </Text>
+        </Box>
+      ) : null}
+
+      {paletteOpen ? (
+        <CommandPalette
+          query={inputRef.current}
+          palette={palette}
+          color={color}
+          onSelect={chooseCommand}
+          onDismiss={() => {
+            setModal('none');
+          }}
+        />
+      ) : null}
+
+      {modal === 'confirm' && gate !== null ? (
+        <ConfirmModal
+          palette={palette}
+          color={color}
+          command={gate.command}
+          {...(gate.reason === undefined ? {} : { reason: gate.reason })}
+          onChoose={(choice) => {
+            closeGate(choice === 'approve' ? 'approve' : 'deny');
+          }}
+        />
+      ) : null}
+
+      {modal === 'model' ? (
+        <ModelPicker
+          palette={palette}
+          color={color}
+          groups={modelGroups}
+          activeModel={model}
+          notice={registryNotice ?? registryMeta}
+          onSelect={(provider, chosen) => {
+            runtime.session.setModel(chosen);
+            setModelState(chosen);
+            setModal('none');
+            setLiveNotice(`model switched to ${chosen} (${provider})`);
+          }}
+          onCancel={() => {
+            setModal('none');
+          }}
+        />
+      ) : null}
+
+      {modal === 'init' ? (
+        <InitWizard
+          palette={palette}
+          color={color}
+          step={wizardStep}
+          providerIndex={wizardProvider}
+          model={PROVIDER_OPTIONS[wizardProvider]?.defaultModel ?? ''}
+          maskedKey={maskKey(wizardKey)}
+          message={wizardMessage}
+          onProvider={setWizardProvider}
+          onKeyChange={setWizardKey}
+          onSubmitKey={() => {
+            void submitKey();
+          }}
+          onCancel={() => {
+            // Discard the secret on the way out, whatever stage we cancel at.
+            setWizardKey('');
+            setModal('none');
+          }}
+        />
+      ) : null}
+
+      <Box flexDirection="column" marginTop={1}>
         <StatusBar
           state={state}
           palette={palette}
           color={color}
           animate={motion}
-          {...(detail === undefined ? {} : { detail })}
+          {...(statusDetail === undefined ? {} : { detail: statusDetail })}
         />
-        {descriptor.awaitsUser && gate !== null ? (
-          <ConfirmationPrompt
-            palette={palette}
-            color={color}
-            message="This command needs your approval before it runs."
-            phrase={gate.phrase}
-          />
-        ) : null}
+        {descriptor.awaitsUser ? null : (
+          <Box marginTop={1}>
+            <Composer
+              palette={palette}
+              color={color}
+              state={state}
+              value={input}
+              enabled={!composerLocked}
+            />
+          </Box>
+        )}
         <Box marginTop={1}>
-          <Composer
+          <StatusFooter
             palette={palette}
             color={color}
-            state={state}
-            value={input}
-            enabled={!busy}
+            provider={runtime.config.provider}
+            model={model}
+            stats={stats}
+            {...(contextWindow === undefined ? {} : { contextWindow })}
           />
         </Box>
       </Box>
     </Box>
   );
+}
+
+/**
+ * A one-line description of a tool call for the status line and tool block.
+ *
+ * Falls back to the tool name rather than throwing: a malformed argument
+ * payload must not take down the interface mid-turn.
+ */
+function safeDescribe(call: { name: string; arguments: unknown }): string {
+  let parsed: Record<string, unknown> = {};
+  if (typeof call.arguments === 'string') {
+    try {
+      const decoded: unknown = JSON.parse(call.arguments);
+      if (typeof decoded === 'object' && decoded !== null) {
+        parsed = decoded as Record<string, unknown>;
+      }
+    } catch {
+      parsed = { command: call.arguments };
+    }
+  } else if (typeof call.arguments === 'object' && call.arguments !== null) {
+    parsed = call.arguments as Record<string, unknown>;
+  }
+  try {
+    return describeToolCall({ id: '', name: call.name, arguments: parsed });
+  } catch {
+    return call.name;
+  }
 }

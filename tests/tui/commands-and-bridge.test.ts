@@ -150,6 +150,14 @@ describe('TUI bridge defaults', () => {
     );
   });
 
+  it('treats a deny decision as a refusal', async () => {
+    const bridge = new TuiBridge();
+    bridge.onGate = () => Promise.resolve('deny');
+    await expect(bridge.requestConfirmation('ATLAS CONFIRM')).resolves.toBe(
+      false,
+    );
+  });
+
   it('ignores a tool start when nothing has mounted', () => {
     const bridge = new TuiBridge();
     expect(() => {
@@ -159,7 +167,7 @@ describe('TUI bridge defaults', () => {
 
   it('delegates a confirmation to the mounted handler', async () => {
     const bridge = new TuiBridge();
-    bridge.onGate = () => Promise.resolve(true);
+    bridge.onGate = () => Promise.resolve('approve');
     await expect(bridge.requestConfirmation('ATLAS CONFIRM')).resolves.toBe(
       true,
     );

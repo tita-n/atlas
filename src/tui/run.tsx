@@ -9,6 +9,8 @@
 import { render, type Instance } from 'ink';
 
 import { createAssistantRuntime } from '../conversation/assistant-runtime.js';
+import { saveConfig, getDefaultConfigPath } from '../config/config.js';
+import { createProvider } from '../providers/provider-factory.js';
 import type { LoadConfigOptions } from '../config/config.js';
 import type { ConfigOverrides } from '../config/config.schema.js';
 import { colorEnabled } from './theme.js';
@@ -88,6 +90,9 @@ export async function runTui({
   }
   const { runtime } = started;
 
+  // Only shown when it is actually known: a guessed context window would make
+  // the percentage a decoration rather than a measurement.
+  const contextWindow = readContextWindow();
   const color = colorEnabled();
   let instance: Instance | undefined;
   try {
@@ -97,6 +102,46 @@ export async function runTui({
         bridge={bridge}
         animate
         resumed={runtime.resumedConversationId !== undefined}
+        {...(contextWindow === undefined ? {} : { contextWindow })}
+        validateKey={async (provider, key) => {
+          // A minimal probe: one tiny completion proves the key is accepted
+          // before anything is written, so a bad key cannot leave a config file
+          // that fails on the next launch. The key is never logged.
+          try {
+            const probe = createProvider({
+              ...runtime.config,
+              provider:
+                provider === 'anthropic-compatible'
+                  ? 'anthropic-compatible'
+                  : 'openai-compatible',
+              apiKey: key,
+              maxTokens: 1,
+            });
+            await probe.chatCompletion({
+              model: runtime.config.model,
+              messages: [{ role: 'user', content: 'ping' }],
+              maxTokens: 1,
+            });
+            return { ok: true };
+          } catch (error) {
+            return {
+              ok: false,
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }}
+        saveConfig={async ({ provider, apiKey, model }) => {
+          await saveConfig(
+            getDefaultConfigPath(runtime.assistantConfig.homeDirectory),
+            {
+              ...runtime.config,
+              provider: provider as typeof runtime.config.provider,
+              apiKey,
+              model,
+            },
+          );
+          runtime.session.setModel(model);
+        }}
       />,
       { stdout: pipedOutput(color), exitOnCtrlC: false },
     );
@@ -106,4 +151,17 @@ export async function runTui({
     await runtime.close().catch(() => undefined);
     instance?.unmount();
   }
+}
+
+/**
+ * Reads an explicitly configured context window.
+ *
+ * Providers do not report one consistently, so Atlas has none by default. An
+ * operator who knows theirs can supply it rather than Atlas inventing one.
+ */
+function readContextWindow(): number | undefined {
+  const raw = process.env.ATLAS_CONTEXT_WINDOW;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
