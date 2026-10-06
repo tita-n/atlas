@@ -59,11 +59,25 @@ import { CommandPalette } from './components/CommandPalette.js';
 import { ConfirmModal } from './components/ConfirmModal.js';
 import { ModelPicker, type ProviderGroup } from './components/ModelPicker.js';
 import {
+  AutonomyModal,
+  type AutonomyStep,
+} from './components/AutonomyModal.js';
+import {
+  AUTONOMY_LEVELS,
+  loadAutonomy,
+  saveAutonomy,
+  type AutonomyLevel,
+} from '../permissions/autonomy.js';
+import {
   InitWizard,
   PROVIDER_OPTIONS,
   maskKey,
+  providerRows,
   type WizardStep,
+  CUSTOM_ENDPOINT,
 } from './components/InitWizard.js';
+import { fuzzyFilter } from './fuzzy.js';
+import { protocolFor } from '../providers/model-registry.js';
 import { StatusFooter } from './components/StatusFooter.js';
 import type { ToolBlockView } from './components/ToolBlock.js';
 import type { GateDecision, TuiBridge } from './bridge.js';
@@ -96,7 +110,7 @@ function pickModels(
 }
 
 /** Which modal, if any, owns the keyboard. */
-type ModalKind = 'none' | 'confirm' | 'palette' | 'model' | 'init';
+type ModalKind = 'none' | 'confirm' | 'palette' | 'model' | 'init' | 'autonomy';
 
 interface PendingGate {
   readonly phrase: string;
@@ -115,6 +129,19 @@ interface LiveTool {
   exitCode?: number | null | undefined;
   durationMs?: number | undefined;
   expanded: boolean;
+}
+
+/** Projects a registry model into what the picker renders. */
+function toModelChoice(entry: {
+  id: string;
+  context: number;
+  pricing?: { input: number; output: number } | undefined;
+}): ProviderGroup['models'][number] {
+  return {
+    model: entry.id,
+    ...(entry.context === 0 ? {} : { contextWindow: entry.context }),
+    note: formatPrice(entry.pricing) ?? 'no published price',
+  };
 }
 
 export interface AtlasAppProps {
@@ -137,6 +164,8 @@ export interface AtlasAppProps {
     provider: string;
     apiKey: string;
     model: string;
+    /** Set when the user configured a custom endpoint in /init. */
+    baseUrl?: string;
   }) => Promise<void>;
 }
 
@@ -183,11 +212,81 @@ export function AtlasApp({
 
   // Wizard state
   const [wizardStep, setWizardStep] = useState<WizardStep>('provider');
-  const [wizardProvider, setWizardProvider] = useState(0);
+  // Index into the filtered /init rows; kept derived so filtering and
+  // highlighting cannot drift apart.
+  const wizardProvider = 0;
   const [wizardKey, setWizardKey] = useState('');
   const [wizardMessage, setWizardMessage] = useState<string | undefined>(
     undefined,
   );
+  const [wizardQuery, setWizardQuery] = useState('');
+  const [wizardIndex, setWizardIndex] = useState(0);
+  const [wizardEndpoint, setWizardEndpoint] = useState('');
+  const [autonomyLevel, setAutonomyLevel] =
+    useState<AutonomyLevel>('confirm-everything');
+  const [autonomyStep, setAutonomyStep] = useState<AutonomyStep>('pick');
+  const [autonomyIndex, setAutonomyIndex] = useState(0);
+  const [autonomyTyped, setAutonomyTyped] = useState('');
+
+  // Read once on mount so the picker shows the real level rather than the
+  // default. Saved changes update it immediately below.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const settings = await loadAutonomy(
+        runtime.assistantConfig.homeDirectory,
+      );
+      if (cancelled) return;
+      setAutonomyLevel(settings.level);
+      const at = AUTONOMY_LEVELS.indexOf(settings.level);
+      setAutonomyIndex(at < 0 ? 0 : at);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runtime.assistantConfig.homeDirectory]);
+  /** The vendor chosen from the list, before a key is entered. */
+  const [wizardSelected, setWizardSelected] = useState<{
+    id: string;
+    label: string;
+    baseUrl?: string | undefined;
+    protocol?: 'openai-compatible' | 'anthropic-compatible' | undefined;
+  } | null>(null);
+
+  const [registry, setRegistry] = useState<RegistrySnapshot>({
+    providers: [],
+    fetchedAt: 0,
+    source: 'cache',
+  });
+  const [registryNotice, setRegistryNotice] = useState<string | undefined>(
+    undefined,
+  );
+  const [registryLoading, setRegistryLoading] = useState(true);
+
+  /** Providers the user has already connected, from the key in the environment. */
+  const configuredProviders = useMemo(
+    () =>
+      registry.providers
+        .filter((provider) =>
+          provider.env.some(
+            (name) =>
+              (process.env[name] ?? '').trim() !== '' ||
+              (runtime.config.baseUrl !== '' &&
+                provider.baseUrl === runtime.config.baseUrl),
+          ),
+        )
+        .map((provider) => provider.id),
+    [registry.providers, runtime.config.baseUrl],
+  );
+
+  /** `/init` rows, filtered live by the search query. */
+  const wizardRows = useMemo(() => {
+    const all = providerRows({
+      providers: registry.providers,
+      configured: configuredProviders,
+    });
+    return fuzzyFilter(all, wizardQuery).map((ranked) => ranked.item);
+  }, [registry.providers, configuredProviders, wizardQuery]);
 
   const inputRef = useRef('');
   const gateRef = useRef<PendingGate | null>(null);
@@ -199,15 +298,6 @@ export function AtlasApp({
   // The provider/model catalogue comes from models.dev, cached on disk. A
   // failure here must never block the interface: it degrades to whatever is
   // cached, and manual entry keeps working.
-  const [registry, setRegistry] = useState<RegistrySnapshot>({
-    providers: [],
-    fetchedAt: 0,
-    source: 'cache',
-  });
-  const [registryNotice, setRegistryNotice] = useState<string | undefined>(
-    undefined,
-  );
-  const [registryLoading, setRegistryLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -495,9 +585,19 @@ export function AtlasApp({
           setModal('model');
           return;
         }
+        if (trimmed === '/autonomy') {
+          setAutonomyStep('pick');
+          setAutonomyTyped('');
+          setAutonomyIndex(Math.max(0, AUTONOMY_LEVELS.indexOf(autonomyLevel)));
+          setModal('autonomy');
+          return;
+        }
         if (trimmed === '/init') {
-          setWizardStep('provider');
+          setWizardStep('search');
           setWizardKey('');
+          setWizardQuery('');
+          setWizardIndex(0);
+          setWizardEndpoint('');
           setModal('init');
           return;
         }
@@ -538,6 +638,11 @@ export function AtlasApp({
       setInput(inputRef.current);
       if (command.opensModal) {
         if (command.name === 'model') setModal('model');
+        if (command.name === 'autonomy') {
+          setAutonomyStep('pick');
+          setAutonomyTyped('');
+          setModal('autonomy');
+        }
         if (command.name === 'init') {
           setWizardStep('provider');
           setWizardKey('');
@@ -554,45 +659,44 @@ export function AtlasApp({
     ? 'loading models.dev...'
     : `${registry.providers.length} providers from models.dev`;
 
+  /**
+   * Models available to switch to.
+   *
+   * Scoped to providers the user has already connected. Listing every vendor
+   * in the dataset here was wrong: `/model` switches between models you can
+   * actually reach, and `/init` is where a provider gets added. Established
+   * harnesses scope the picker the same way.
+   */
   const modelGroups: readonly ProviderGroup[] = useMemo(() => {
     const groups: ProviderGroup[] = [];
-    // The vendor Atlas is currently configured against, first.
     const activeVendor = registry.providers.find(
       (provider) =>
-        provider.baseUrl === runtime.config.baseUrl ||
-        provider.env.some((name) => name === 'ATLAS_API_KEY_ENV'),
+        provider.baseUrl?.replace(/\/+$/, '') ===
+        runtime.config.baseUrl.replace(/\/+$/, ''),
     );
-    const seen = new Set<string>();
+
     if (activeVendor !== undefined) {
-      seen.add(activeVendor.id);
       groups.push({
         provider: activeVendor.name,
-        models: pickModels(activeVendor, model).map((entry) => ({
-          model: entry.id,
-          contextWindow: entry.context === 0 ? undefined : entry.context,
-          note: formatPrice(entry.pricing) ?? 'no published price',
-        })),
+        models: pickModels(activeVendor, model).map(toModelChoice),
       });
-    }
-    for (const provider of registry.providers) {
-      if (seen.has(provider.id)) continue;
+    } else {
+      // Configured against an endpoint the registry does not describe - a
+      // proxy, a local server, or a custom endpoint from /init.
       groups.push({
-        provider: provider.name,
-        models: pickModels(provider, model).map((entry) => ({
-          model: entry.id,
-          contextWindow: entry.context === 0 ? undefined : entry.context,
-          note: formatPrice(entry.pricing) ?? 'no published price',
-        })),
+        provider: 'configured endpoint',
+        models: [{ model, note: 'active this session' }],
       });
     }
-    // Always offer manual entry: the registry is community-maintained and a
-    // genuinely new model may not be in it yet.
+
+    // Manual entry stays available: the registry is community-maintained and
+    // a genuinely new model may not be in it yet.
     groups.push({
-      provider: 'manual',
+      provider: 'not listed?',
       models: [
         {
           model,
-          note: 'active — type any model id if the registry lags',
+          note: 'enter any model id — /init adds a custom endpoint',
         },
       ],
     });
@@ -600,18 +704,40 @@ export function AtlasApp({
   }, [registry.providers, runtime.config.baseUrl, model]);
 
   const submitKey = useCallback(async (): Promise<void> => {
-    if (wizardStep === 'provider') {
+    const chosen = wizardRows[wizardIndex];
+
+    if (wizardStep === 'search' || wizardStep === 'provider') {
+      if (chosen === undefined) return;
+      const vendor = registry.providers.find((p) => p.id === chosen.id);
+      setWizardSelected({
+        id: chosen.id,
+        label: chosen.label,
+        baseUrl: vendor?.baseUrl,
+        // Undefined protocol means genuinely unknown, so the UI asks rather
+        // than guessing a wire format.
+        protocol: vendor === undefined ? undefined : protocolFor(vendor),
+      });
+      // A provider the dataset has no endpoint for needs one typed in before a
+      // key can be validated against it.
+      setWizardStep(chosen.id === CUSTOM_ENDPOINT ? 'endpoint' : 'key');
+      return;
+    }
+    if (wizardStep === 'endpoint') {
+      if (wizardEndpoint.trim() === '') return;
       setWizardStep('key');
       return;
     }
     if (wizardStep !== 'key' || wizardKey === '') return;
-    const option = PROVIDER_OPTIONS[wizardProvider];
-    if (option === undefined) return;
     setWizardStep('validating');
-    const provider =
-      runtime.config.provider === option.id
-        ? runtime.config.provider
-        : option.id;
+    // A custom endpoint is OpenAI-compatible unless the user says otherwise,
+    // because that is what nearly every self-hosted gateway speaks.
+    const provider = wizardSelected?.protocol ?? runtime.config.provider;
+    const model =
+      wizardSelected?.id === CUSTOM_ENDPOINT
+        ? wizardEndpoint
+        : (PROVIDER_OPTIONS[wizardProvider]?.defaultModel ??
+          wizardSelected?.id ??
+          runtime.config.model);
     if (validateKey === undefined) {
       setWizardStep('done');
       return;
@@ -622,7 +748,11 @@ export function AtlasApp({
         await saveConfig({
           provider,
           apiKey: wizardKey,
-          model: option.defaultModel,
+          model,
+          ...(wizardSelected?.id === CUSTOM_ENDPOINT &&
+          wizardEndpoint.trim() !== ''
+            ? { baseUrl: wizardEndpoint.trim() }
+            : {}),
         });
       }
       // Drop the secret as soon as it is no longer needed.
@@ -764,6 +894,30 @@ export function AtlasApp({
         />
       ) : null}
 
+      {modal === 'autonomy' ? (
+        <AutonomyModal
+          palette={palette}
+          color={color}
+          current={autonomyLevel}
+          step={autonomyStep}
+          index={autonomyIndex}
+          typed={autonomyTyped}
+          onIndex={setAutonomyIndex}
+          onStep={setAutonomyStep}
+          onTyped={setAutonomyTyped}
+          onLevel={(level) => {
+            // Persist immediately: friction is spent choosing, not saving.
+            void saveAutonomy(runtime.assistantConfig.homeDirectory, level);
+            setAutonomyLevel(level);
+            setModal('none');
+            setLiveNotice(`autonomy level set to ${level}`);
+          }}
+          onCancel={() => {
+            setModal('none');
+          }}
+        />
+      ) : null}
+
       {modal === 'model' ? (
         <ModelPicker
           palette={palette}
@@ -789,10 +943,29 @@ export function AtlasApp({
           color={color}
           step={wizardStep}
           providerIndex={wizardProvider}
-          model={PROVIDER_OPTIONS[wizardProvider]?.defaultModel ?? ''}
+          selectedLabel={wizardRows[wizardIndex]?.label}
+          model={model}
           maskedKey={maskKey(wizardKey)}
           message={wizardMessage}
-          onProvider={setWizardProvider}
+          rows={wizardRows}
+          index={wizardIndex}
+          query={wizardQuery}
+          onQueryChange={(value) => {
+            setWizardQuery(value);
+            // Filtering changes which row is highlighted, so the selection
+            // resets rather than pointing at an arbitrary survivor.
+            setWizardIndex(0);
+          }}
+          endpoint={wizardEndpoint}
+          onEndpointChange={setWizardEndpoint}
+          onProvider={(next) => {
+            setWizardIndex(
+              wizardRows.length === 0
+                ? 0
+                : ((next % wizardRows.length) + wizardRows.length) %
+                    wizardRows.length,
+            );
+          }}
           onKeyChange={setWizardKey}
           onSubmitKey={() => {
             void submitKey();

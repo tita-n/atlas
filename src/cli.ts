@@ -44,6 +44,17 @@ import { buildSystemPrompt } from './memory/context-builder.js';
 import { openDatabase, type MemoryDatabase } from './memory/database.js';
 
 import { createAssistantRuntime } from './conversation/assistant-runtime.js';
+import {
+  AUTONOMY_LEVELS,
+  DEFAULT_AUTONOMY_LEVEL,
+  describeLevel,
+  isAutonomyLevel,
+  loadAutonomy,
+  saveAutonomy,
+  confirmationPhraseFor,
+  type AutonomyLevel,
+} from './permissions/autonomy.js';
+import { loadAssistantConfig } from './config/assistant-config.js';
 import { runAssistantCommand } from './conversation/assistant-commands.js';
 import { canRunTui } from './tui/can-run.js';
 import { runVoiceCorrections } from './voice/cli.js';
@@ -1052,6 +1063,89 @@ function runHistory(): void {
   }
 }
 
+/**
+ * Shows or sets the autonomy level.
+ *
+ * Raising or keeping the default level is frictionless. Lowering it requires
+ * the user to read what is being given up and type a specific phrase, because
+ * this is the one setting where a mis-click has consequences that persist.
+ */
+async function runAutonomy(options: {
+  level?: string;
+  confirm?: boolean;
+  home: string;
+}): Promise<void> {
+  const atlasHome = options.home;
+  const current = await loadAutonomy(atlasHome);
+
+  if (options.level === undefined) {
+    console.log(`Autonomy level: ${current.level}`);
+    console.log(
+      `  ${describeLevel(current.level).label} - ${describeLevel(current.level).risk}`,
+    );
+    if (current.level !== DEFAULT_AUTONOMY_LEVEL) {
+      console.log('');
+      console.log('It persists until you change it back with:');
+      console.log(`  atlas autonomy --level ${DEFAULT_AUTONOMY_LEVEL}`);
+    }
+    return;
+  }
+
+  if (!isAutonomyLevel(options.level)) {
+    console.error(`Unknown autonomy level: ${options.level}`);
+    console.error(`Choose one of: ${AUTONOMY_LEVELS.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const target: AutonomyLevel = options.level;
+  if (target === current.level) {
+    console.log(`Autonomy level is already ${target}.`);
+    return;
+  }
+
+  const described = describeLevel(target);
+  // Lowering past the default is the risky direction and gets the ceremony.
+  // Raising it back is deliberately frictionless so recovering is easy.
+  const isLowering =
+    AUTONOMY_LEVELS.indexOf(target) > AUTONOMY_LEVELS.indexOf(current.level);
+  if (isLowering && described.requiresFriction) {
+    const phrase = confirmationPhraseFor(target);
+    console.log('');
+    console.log(`About to set autonomy to: ${described.label}`);
+    console.log('');
+    console.log(`  ${described.risk}`);
+    console.log('');
+    console.log('Unrecoverable actions still stop for you either way:');
+    console.log('  - wiping a disk or a filesystem root');
+    console.log('  - deleting your home directory');
+    console.log("  - editing Atlas's own permission or safety configuration");
+    console.log('');
+    if (options.confirm === true) {
+      console.error('Refusing to lower autonomy non-interactively.');
+      process.exitCode = 1;
+      return;
+    }
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: process.stdin.isTTY ?? false,
+    });
+    const answer = await ask(rl, `Type "${phrase}" to continue: `);
+    rl.close();
+    if (answer.trim() !== phrase) {
+      console.log('Autonomy level unchanged.');
+      return;
+    }
+  }
+
+  await saveAutonomy(atlasHome, target);
+  console.log(`Autonomy level set to ${target}.`);
+  if (target !== DEFAULT_AUTONOMY_LEVEL) {
+    console.log('It stays that way until you change it back.');
+  }
+}
+
 function runAudit(options: {
   tier?: 0 | 1 | 2 | 3;
   since?: string;
@@ -1169,6 +1263,14 @@ export async function main(argv = process.argv): Promise<void> {
       'only entries at or after this ISO timestamp',
     )
     .option('--limit <number>', 'maximum entries to show', parseAuditLimit);
+  const autonomy = addCommonOptions(program.command('autonomy'))
+    .description('show or set how often Atlas asks before acting')
+    .option('--level <level>', `set the level: ${AUTONOMY_LEVELS.join(', ')}`)
+    .option(
+      '--confirm',
+      'acknowledge the change without the typed confirmation (refused when lowering)',
+      false,
+    );
   const permissions = program
     .command('permissions')
     .description('manage Atlas shell permissions');
@@ -1268,6 +1370,15 @@ export async function main(argv = process.argv): Promise<void> {
   history.action(() => {
     runHistory();
   });
+  autonomy.action(async (options: { level?: string; confirm: boolean }) => {
+    const home = loadAssistantConfig().homeDirectory;
+    await runAutonomy({
+      ...(options.level === undefined ? {} : { level: options.level }),
+      confirm: options.confirm,
+      home,
+    });
+  });
+
   audit.action(
     (options: { tier?: 0 | 1 | 2 | 3; since?: string; limit?: number }) => {
       runAudit(options);

@@ -61,6 +61,12 @@ export const ASSISTANT_COMMAND_REGISTRY: readonly AssistantCommandSpec[] = [
     opensModal: true,
   },
   {
+    name: 'autonomy',
+    summary: 'Show or set how often Atlas asks before acting',
+    takesArgument: false,
+    opensModal: true,
+  },
+  {
     name: 'init',
     summary: 'Set up a provider and API key',
     takesArgument: false,
