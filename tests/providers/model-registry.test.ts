@@ -25,8 +25,28 @@ import {
   type ProviderInfo,
 } from '../../src/providers/model-registry.js';
 
-const REAL_PAYLOAD = '/tmp/models.json';
-const hasRealPayload = existsSync(REAL_PAYLOAD);
+/**
+ * The real models.dev payload, when one has been downloaded locally.
+ *
+ * Optional on purpose. A machine without it - CI, or anywhere /tmp has been
+ * cleaned - must still run this suite, so the payload tests skip rather than
+ * failing on a missing file.
+ */
+const REAL_PAYLOAD = process.env.MODELS_DEV_FIXTURE ?? '/tmp/models.json';
+
+function loadRealPayload(): object | undefined {
+  try {
+    if (!existsSync(REAL_PAYLOAD)) return undefined;
+    const parsed: object = JSON.parse(
+      readFileSync(REAL_PAYLOAD, 'utf8'),
+    ) as object;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+const REAL_RAW = loadRealPayload();
 
 function fixture(): unknown {
   return {
@@ -373,8 +393,8 @@ describe('lookups', () => {
 });
 
 // Only runs where the real payload was already fetched, so CI stays offline-safe.
-describe.runIf(hasRealPayload)('the real models.dev payload', () => {
-  const raw: unknown = JSON.parse(readFileSync(REAL_PAYLOAD, 'utf8'));
+describe.runIf(REAL_RAW !== undefined)('the real models.dev payload', () => {
+  const raw = REAL_RAW;
 
   it('parses every provider without throwing', () => {
     const providers = parseRegistry(raw);

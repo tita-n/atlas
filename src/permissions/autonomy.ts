@@ -33,6 +33,28 @@ export const AUTONOMY_LEVELS: readonly AutonomyLevel[] = [
 ];
 
 /** The level Atlas starts in. Changing this would be a safety regression. */
+/**
+ * Why a self-modification always needs a person.
+ *
+ * Kept beside the hard floor because it is enforced the same way: structurally,
+ * reading no level and no setting. A setting that could be flipped eventually
+ * would be flipped by habit.
+ */
+export const SELF_MODIFICATION_REASON =
+  'Atlas is changing its own code. This needs a person every time, at any ' +
+  'autonomy level, because a bad self-modification can affect every later ' +
+  'decision rather than just this one.';
+
+/**
+ * Whether a self-modification always requires human approval.
+ *
+ * Takes no arguments on purpose: there is no input through which a caller could
+ * ask for the exemption to be skipped.
+ */
+export function selfModificationAlwaysAsks(): boolean {
+  return true;
+}
+
 export const DEFAULT_AUTONOMY_LEVEL: AutonomyLevel = 'confirm-everything';
 
 export interface AutonomySettings {
