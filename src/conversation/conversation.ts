@@ -118,6 +118,21 @@ export class Conversation {
     this.#options.buildSystemPrompt = undefined;
   }
 
+  /**
+   * Switches the model used for subsequent requests.
+   *
+   * Applies from the next request onward; an in-flight turn keeps the model it
+   * started with, so a switch can never split one turn across two models.
+   */
+  public setModel(model: string): void {
+    this.#options.model = model;
+  }
+
+  /** The model currently used for requests. */
+  public get model(): string {
+    return this.#options.model;
+  }
+
   /** Clears working history without deleting persisted rows. */
   public clear(): void {
     this.#messages.length = 0;

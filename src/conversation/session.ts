@@ -39,6 +39,16 @@ import {
 import { loadPersonality, defaultPersonalityPath } from './personality.js';
 import { buildTurnPrompt } from './system-prompt.js';
 
+/** One executed tool call, as a front-end needs it to render a tool block. */
+export interface TurnToolCall {
+  readonly name: string;
+  readonly command: string;
+  readonly ok: boolean;
+  readonly summary: string;
+  readonly detail: string;
+  readonly durationMs: number;
+}
+
 /** Everything the caller needs to render one turn. */
 export interface TurnResult {
   /** The conversational narration, with execution detail removed. */
@@ -51,6 +61,17 @@ export interface TurnResult {
   readonly correctionsApplied: readonly string[];
   /** Whether a shell command ran during this turn. */
   readonly executed: boolean;
+  /**
+   * Provider-reported token usage for this turn, when the provider gave any.
+   *
+   * Additive and nullable so existing consumers are unaffected. A front-end
+   * that displays token counts must show what the provider actually reported
+   * and nothing else, which is why this is absent rather than zero-filled when
+   * a provider omits it.
+   */
+  readonly usage?: { inputTokens: number; outputTokens: number } | undefined;
+  /** Tool calls executed during this turn, in order. */
+  readonly toolCalls?: readonly TurnToolCall[] | undefined;
 }
 
 /** Ledger-aware tool executor that records what ran. */
@@ -191,6 +212,21 @@ export class AssistantSession {
     return this.#personality ?? '';
   }
 
+  /**
+   * Switches the active model for subsequent turns.
+   *
+   * History, memory, corrections, and the permission gate are untouched; only
+   * which model answers the next request changes.
+   */
+  public setModel(model: string): void {
+    this.#options.conversation.setModel(model);
+  }
+
+  /** The model currently in use. */
+  public get model(): string {
+    return this.#options.conversation.model;
+  }
+
   /** Loads the editable personality block, writing a default on first run. */
   public async loadPersonality(): Promise<string> {
     this.#personality = await loadPersonality(
@@ -301,6 +337,8 @@ export class AssistantSession {
         memoriesUsed: [],
         correctionsApplied: [],
         executed: false,
+        usage: undefined,
+        toolCalls: [],
       };
     }
 
@@ -332,6 +370,24 @@ export class AssistantSession {
       memoriesUsed: context.memories,
       correctionsApplied: context.corrections,
       executed: this.ledger.hasWork,
+      ...(response.usage === undefined
+        ? { usage: undefined }
+        : {
+            usage: {
+              inputTokens: response.usage.inputTokens,
+              outputTokens: response.usage.outputTokens,
+            },
+          }),
+      // Projected into the shape a front-end needs to render a tool block,
+      // rather than exposing the ledger's internal record type.
+      toolCalls: this.ledger.records.map((record) => ({
+        name: record.toolName,
+        command: record.command,
+        ok: record.ok,
+        summary: record.summary,
+        detail: record.detail,
+        durationMs: record.durationMs,
+      })),
     };
   }
 

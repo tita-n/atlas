@@ -14,14 +14,89 @@
 import type { CorrectionsRepository } from '../memory/corrections-repository.js';
 import type { FactsRepository } from '../memory/facts-repository.js';
 
+/**
+ * The assistant loop's command registry.
+ *
+ * Structured data rather than a preformatted help string, so the help text,
+ * the completion dropdown, and any future discovery surface all read from one
+ * source instead of three that can drift.
+ */
+export interface AssistantCommandSpec {
+  /** Token the user types, without the leading slash. */
+  readonly name: string;
+  /** One-line description shown in the dropdown and in /help. */
+  readonly summary: string;
+  /** Whether the command takes an argument, e.g. `/corrections forget <id>`. */
+  readonly takesArgument: boolean;
+  /** Example argument form, for the dropdown. */
+  readonly argumentHint?: string;
+  /** Whether the command reaches outside the conversation to change settings. */
+  readonly opensModal: boolean;
+}
+
+export const ASSISTANT_COMMAND_REGISTRY: readonly AssistantCommandSpec[] = [
+  {
+    name: 'help',
+    summary: 'Show this list',
+    takesArgument: false,
+    opensModal: false,
+  },
+  {
+    name: 'facts',
+    summary: 'List durable facts Atlas remembers',
+    takesArgument: false,
+    opensModal: false,
+  },
+  {
+    name: 'corrections',
+    summary: 'List standing corrections you have taught it',
+    takesArgument: true,
+    argumentHint: 'forget <id>',
+    opensModal: false,
+  },
+  {
+    name: 'model',
+    summary: 'Switch the active model',
+    takesArgument: false,
+    opensModal: true,
+  },
+  {
+    name: 'init',
+    summary: 'Set up a provider and API key',
+    takesArgument: false,
+    opensModal: true,
+  },
+  {
+    name: 'exit',
+    summary: 'Leave Atlas (Ctrl+D also works)',
+    takesArgument: false,
+    opensModal: false,
+  },
+];
+
+/** Commands matching a partially typed name, for the completion dropdown. */
+export function filterAssistantCommands(query: string): AssistantCommandSpec[] {
+  const needle = query.replace(/^\//, '').trim().toLowerCase();
+  if (needle === '') return [...ASSISTANT_COMMAND_REGISTRY];
+  // Prefix matches first: typing "/c" should offer /corrections, not every
+  // command whose description happens to contain the letter "c".
+  const byName = ASSISTANT_COMMAND_REGISTRY.filter((command) =>
+    command.name.startsWith(needle),
+  );
+  if (byName.length > 0) return byName;
+  return ASSISTANT_COMMAND_REGISTRY.filter((command) =>
+    command.summary.toLowerCase().includes(needle),
+  );
+}
+
 /** Commands available inside the assistant loop. */
 export const ASSISTANT_HELP = [
   'Commands:',
-  '  /help        show this list',
-  '  /facts       list durable facts Atlas remembers',
-  '  /corrections list standing corrections you have taught it',
-  '  /corrections forget <id>  remove one you no longer want remembered',
-  '  /exit        leave (Ctrl+D also works)',
+  ...ASSISTANT_COMMAND_REGISTRY.map((command) => {
+    const argument = command.argumentHint ?? '';
+    const label = `  /${command.name}${argument === '' ? '' : ` ${argument}`}`;
+    return `${label.padEnd(28)}${command.summary}`;
+  }),
   '',
   'Anything else is sent to Atlas. It resumes your last conversation',
   'automatically; use "atlas chat --new" to start over.',
