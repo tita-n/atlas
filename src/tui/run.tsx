@@ -130,7 +130,7 @@ export async function runTui({
             };
           }
         }}
-        saveConfig={async ({ provider, apiKey, model }) => {
+        saveConfig={async ({ provider, apiKey, model, baseUrl }) => {
           await saveConfig(
             getDefaultConfigPath(runtime.assistantConfig.homeDirectory),
             {
@@ -138,6 +138,10 @@ export async function runTui({
               provider: provider as typeof runtime.config.provider,
               apiKey,
               model,
+              // A custom endpoint replaces the vendor default; without one the
+              // existing base URL is kept so /init does not silently reroute a
+              // working configuration.
+              ...(baseUrl === undefined ? {} : { baseUrl }),
             },
           );
           runtime.session.setModel(model);
