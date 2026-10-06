@@ -8,6 +8,7 @@ import { ConfirmationFlow } from '../../src/permissions/confirmation-flow.js';
 import { RiskClassifier } from '../../src/permissions/risk-classifier.js';
 import { ShellSession } from '../../src/shell/shell-session.js';
 import { ShellTool } from '../../src/shell/shell-tool.js';
+import type { GatePath } from '../../src/audit/audit-log.schema.js';
 import type { LLMProvider } from '../../src/providers/provider.interface.js';
 
 const directories: string[] = [];
@@ -22,9 +23,10 @@ afterEach(async () => {
   );
 });
 
-async function fixture(): Promise<{
+async function fixture(options: { gatePath?: GatePath } = {}): Promise<{
   tool: ShellTool;
   audit: AuditLog;
+  session: ShellSession;
   confirmText: ReturnType<typeof vi.fn>;
   close: () => void;
 }> {
@@ -54,10 +56,12 @@ async function fixture(): Promise<{
     classifier: new RiskClassifier(),
     confirmation,
     auditLog: audit,
+    ...(options.gatePath === undefined ? {} : { gatePath: options.gatePath }),
   });
   return {
     tool,
     audit,
+    session,
     confirmText,
     close: () => {
       database.close();
@@ -103,7 +107,7 @@ describe('ShellTool', () => {
         command: 'rm -rf /',
         decision: 'blocked',
         riskTier: 1,
-        outcome: 'not executed',
+        outcome: 'denied',
       });
     } finally {
       fixtureValue.close();
@@ -135,6 +139,37 @@ describe('ShellTool', () => {
     }
   });
 
+  it('records the gate path when execution itself fails', async () => {
+    // Regression with teeth: the failure path used to append with no
+    // gatePath, leaving a decision the gate had already made unattributed.
+    const fixtureValue = await fixture({ gatePath: 'text-safe-word' });
+    fixtureValue.confirmText.mockResolvedValue(true);
+    try {
+      vi.spyOn(fixtureValue.session, 'execute').mockRejectedValue(
+        new Error('shell exploded'),
+      );
+
+      // Must not throw: the audit write must not replace the error the user
+      // is shown with an exception.
+      const result = await fixtureValue.tool.execute({
+        id: 'call-1',
+        name: 'shell',
+        arguments: { command: 'chmod 600 /tmp/atlas-target' },
+      });
+
+      expect(result.content).toContain('Shell execution failed');
+      // Exactly the configured path, not merely some truthy value.
+      expect(fixtureValue.audit.list()[0]).toMatchObject({
+        command: 'chmod 600 /tmp/atlas-target',
+        decision: 'asked-approved',
+        outcome: 'failed',
+        gatePath: 'text-safe-word',
+      });
+    } finally {
+      fixtureValue.close();
+    }
+  });
+
   it('does not execute a denied Tier 2 command', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'atlas-tier2-deny-'));
     directories.push(directory);
@@ -153,7 +188,7 @@ describe('ShellTool', () => {
       expect(fixtureValue.confirmText).toHaveBeenCalledOnce();
       expect(fixtureValue.audit.list()[0]).toMatchObject({
         decision: 'asked-denied',
-        outcome: 'not executed',
+        outcome: 'denied',
       });
     } finally {
       fixtureValue.close();
