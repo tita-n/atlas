@@ -22,6 +22,22 @@
 export const DEFAULT_COMPLEXITY_THRESHOLD = 3;
 
 /**
+ * Connectives that reliably mark a step in a request.
+ *
+ * "then", "next", "finally" and "after that" are doing the same job whether
+ * or not the message names a file. The rest are ordinary English far more
+ * often than they are step markers, so they only count alongside a real path.
+ */
+const STEP_CONNECTIVES = /\b(?:then|and then|after that|next|finally)\b/gi;
+
+/**
+ * Connectives that mark a step only when the message also names something
+ * concrete. "First of all, is there a next step? Also, should I bother?" is a
+ * question, and a nudge aimed at it is attention the model does not need.
+ */
+const SOFT_CONNECTIVES = /\b(?:also|first|second|third|once)\b/gi;
+
+/**
  * A crude but stable signal of whether a task is non-trivial.
  *
  * Counts distinct commands the message implies plus files it names. Cheap, has
@@ -33,18 +49,19 @@ export function estimateComplexity(message: string): number {
 
   let score = 0;
 
-  // Conjunctions between steps: the shape of a multi-step request.
-  const connectives = text.match(
-    /\b(?:then|and then|after that|also|next|finally|first|second|third|once)\b/gi,
-  );
-  score += connectives?.length ?? 0;
+  // Named files or paths. The extension is two characters or more so that
+  // abbreviations like "e.g." do not read as filenames.
+  const paths = text.match(/[\w-]+\/[\w./-]+|\b[\w-]+\.[a-z]{2,6}\b/gu);
+  const namedPaths = new Set(paths ?? []);
+  score += Math.min(3, namedPaths.size);
 
-  // Named files or paths.
-  const paths = text.match(/[\w-]+\/[\w./-]+|\b[\w-]+\.[a-z]{1,6}\b/g);
-  score += Math.min(3, new Set(paths ?? []).size);
+  score += text.match(STEP_CONNECTIVES)?.length ?? 0;
+  if (namedPaths.size > 0) {
+    score += text.match(SOFT_CONNECTIVES)?.length ?? 0;
+  }
 
   // A plural verb plus a conjunction usually means a batch of work.
-  if (/\b\w+(?:s|es)\b.*\band\b/i.test(text)) score += 1;
+  if (/\b\w+(?:s|es)\b.*\band\b/iu.test(text)) score += 1;
 
   return score;
 }

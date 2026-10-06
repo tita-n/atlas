@@ -44,18 +44,219 @@ export interface Claim {
   readonly line: number;
 }
 
+// A target is any run of non-space, non-quoting characters, so a path written
+// in a non-ASCII script is still a target rather than something the regex
+// silently drops. `\w` would quietly skip those and lose the claim entirely.
 const ARTIFACT =
-  /\b(?:wrote|created|added|saved|generated|made)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?[`"']?([\w./-]+\.[a-z]{1,6})[`"']?/gi;
+  /\b(?:wrote|created|added|saved|generated|made)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?[`"']?((?:[^\s`'()[\]{},;:!?])+\.[a-z]{1,6})[`"']?/gi;
 const ACTION_READ =
-  /\b(?:read|opened|inspected|cat(?:'d)?)\s+[`"']?([\w./-]+)[`"']?/gi;
+  /\b(?:read|opened|inspected|cat(?:'d)?)\s+(?:the\s+|a\s+|an\s+)?[`"']?([^\s`'()[\]{},;:!?]+)/gi;
 const ACTION_RUN =
-  /\b(?:ran|runs|executed|started)\s+[`"']?([\w ./@_-]+?)[`"']?(?=\s|[.,;!?]|$)/gi;
+  /\b(?:ran|runs|executed|started)\s+(?:the\s+|a\s+|an\s+)?[`"']?((?:[^\s`'()[\]{},;:!?]+)(?:\s+(?:[^\s`'()[\]{},;:!?]+)){0,2})/gi;
 const TESTS =
   /\b(?:all\s+)?(\d+\s+)?tests?\s+(?:pass|passed|succeed(?:ed)?)\b/i;
+
+/**
+ * Words that mean the claim belongs to somebody else, not to this turn.
+ *
+ * "The previous agent said 'I wrote src/app.ts'" is a quote, not a claim, and
+ * verifying it against this turn's record credits the turn for work it never
+ * did.
+ */
+const ATTRIBUTED =
+  /\b(?:said|says|claimed|claims|insisted|insists|allegedly|according to)\b/i;
+
+/** Cues that invert what follows them. */
+const NEGATED =
+  /\b(?:not|never|no|none|nothing|without|cannot|can't|won't|wouldn't|couldn't|didn't|doesn't|don't|isn't|wasn't|weren't|hasn't|haven't|hadn't|shouldn't|could\s+not|did\s+not|does\s+not|do\s+not|can\s+not|will\s+not|would\s+not)\b/i;
+
+/**
+ * Where a negation or an attribution stops applying.
+ *
+ * Without this, "I did not run the tests, but I did write src/app.ts" would
+ * carry the first clause's negation over into the second.
+ */
+const CLAUSE_BOUNDARY =
+  /[,;:!?]|\b(?:but|and|or|so|because|though|although|however|while|whereas)\b/i;
+
+/**
+ * How far back a negation or attribution can reach.
+ *
+ * Bounded on purpose: the text before a match is re-read for every match, and
+ * a window keeps extraction linear in the length of the message instead of
+ * quadratic in its claim count.
+ */
+const CONTEXT_REACH = 120;
+
+/**
+ * Grammar around the target rather than the target.
+ *
+ * "I ran the deploy script" names `deploy script`; without this the captured
+ * word is `the`, which matches half of every command line ever recorded.
+ */
+const FILLER_WORDS: ReadonlySet<string> = new Set([
+  'a',
+  'again',
+  'all',
+  'an',
+  'and',
+  'are',
+  'at',
+  'back',
+  'be',
+  'been',
+  'being',
+  'but',
+  'by',
+  'did',
+  'do',
+  'does',
+  'down',
+  'everything',
+  'for',
+  'from',
+  'had',
+  'has',
+  'have',
+  'he',
+  'her',
+  'his',
+  'i',
+  'in',
+  'is',
+  'it',
+  'its',
+  'me',
+  'my',
+  'now',
+  'of',
+  'off',
+  'on',
+  'once',
+  'only',
+  'or',
+  'our',
+  'out',
+  'she',
+  'so',
+  'some',
+  'that',
+  'the',
+  'their',
+  'them',
+  'these',
+  'they',
+  'this',
+  'those',
+  'thing',
+  'things',
+  'to',
+  'up',
+  'us',
+  'was',
+  'we',
+  'were',
+  'with',
+  'you',
+  'your',
+]);
+
+/** Commands whose purpose is to put a file on disk. */
+const WRITE_COMMAND =
+  /\b(touch|mkdir|tee|install|cp|mv|rsync|dd|truncate|patch|git apply|git checkout|git restore)\b|>>?\s*\S/;
+
+/**
+ * Path-like tokens a successful write command mentions.
+ *
+ * Lets a real turn settle a "wrote x" claim from what it actually ran. Without
+ * this every artifact claim stays inconclusive, and the gate would append a
+ * "could not verify" note to almost every ordinary completion - technically
+ * fail-closed, practically noise that trains people to ignore it.
+ */
+export function writtenPathsFrom(
+  commands: readonly { readonly command: string; readonly ok: boolean }[],
+): readonly string[] {
+  const written = new Set<string>();
+  for (const entry of commands) {
+    // Only a command that actually succeeded wrote anything.
+    if (!entry.ok) continue;
+    if (!WRITE_COMMAND.test(entry.command)) continue;
+    for (const token of entry.command.split(/\s+/)) {
+      const cleaned = token.replace(/^["'`]|["'`]$/g, '').trim();
+      if (cleaned === '' || !/[/.]/.test(cleaned)) continue;
+      if (cleaned.startsWith('-')) continue;
+      written.add(cleaned);
+    }
+  }
+  return [...written];
+}
 
 /** Commands that constitute actually running a test suite. */
 const TEST_RUNNER =
   /\b(vitest|jest|pytest|npm (run )?test|go test|cargo test|nx test)\b/;
+
+/** Opening or closing fence of a markdown code block. */
+const FENCE = /^\s*(?:`{3,}|~{3,})/;
+
+/**
+ * Blanks out fenced code blocks, keeping every character position.
+ *
+ * A patch shown in a code fence contains the words "wrote src/app.ts" without
+ * asserting anything about the world, and matching inside it turns a diff into
+ * a completion claim. Spaces preserve offsets and line numbers, so the claim
+ * text and line still point at the real message.
+ */
+function maskFencedBlocks(narration: string): string {
+  let open = false;
+  return narration
+    .split('\n')
+    .map((line) => {
+      if (FENCE.test(line)) {
+        open = !open;
+        return ' '.repeat(line.length);
+      }
+      return open ? ' '.repeat(line.length) : line;
+    })
+    .join('\n');
+}
+
+/** The clause a match sits in, with the rest of the line discarded. */
+function clauseTail(prefix: string): string {
+  const parts = prefix.split(CLAUSE_BOUNDARY);
+  return parts[parts.length - 1] ?? prefix;
+}
+
+function isNegated(prefix: string): boolean {
+  return NEGATED.test(clauseTail(prefix));
+}
+
+function isAttributed(prefix: string): boolean {
+  return ATTRIBUTED.test(clauseTail(prefix));
+}
+
+/** Trailing sentence punctuation that is not part of a filename's extension. */
+const TRAILING_DOT = /\.$/u;
+const EXTENSION = /\.[a-z]{1,6}$/iu;
+
+/**
+ * The command or path a claim names, stripped of the grammar around it.
+ *
+ * Returns undefined when the claim named nothing checkable - "I ran the" - so
+ * the caller records an unresolvable claim rather than scoring a filler word.
+ */
+function normalizeActionTarget(raw: string): string | undefined {
+  const tokens = raw
+    .trim()
+    .split(/\s+/u)
+    .filter((token) => token !== '' && !FILLER_WORDS.has(token.toLowerCase()));
+  if (tokens.length === 0) return undefined;
+  const last = tokens[tokens.length - 1];
+  const trimmed =
+    last !== undefined && !EXTENSION.test(last)
+      ? last.replace(TRAILING_DOT, '')
+      : last;
+  return [...tokens.slice(0, -1), trimmed ?? ''].join(' ').trim();
+}
 
 /**
  * Extracts the concrete claims in a completion message.
@@ -66,14 +267,34 @@ const TEST_RUNNER =
  */
 export function extractClaims(narration: string): Claim[] {
   const claims: Claim[] = [];
-  const lines = narration.split('\n');
+  const scanned = maskFencedBlocks(narration);
+  const lines = scanned.split('\n');
+  const seen = new Set<string>();
+
+  const add = (claim: Claim): void => {
+    // The same fragment can match two patterns - "ran cat x" is both a run
+    // and a read - and a doubled claim doubles the annotation for no gain.
+    // Keyed in a set rather than scanned for, so extraction stays linear in
+    // the size of the message.
+    const key = `${claim.kind}|${claim.target ?? ''}|${claim.text}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    claims.push(claim);
+  };
 
   lines.forEach((line, index) => {
     let match: RegExpExecArray | null;
+    // Text before the match decides whether this is a claim at all.
+    let prefix: string;
 
     ARTIFACT.lastIndex = 0;
     while ((match = ARTIFACT.exec(line)) !== null) {
-      claims.push({
+      prefix = line.slice(
+        Math.max(0, match.index - CONTEXT_REACH),
+        match.index,
+      );
+      if (isNegated(prefix) || isAttributed(prefix)) continue;
+      add({
         kind: 'artifact',
         text: match[0].trim(),
         target: match[1],
@@ -83,47 +304,62 @@ export function extractClaims(narration: string): Claim[] {
 
     ACTION_READ.lastIndex = 0;
     while ((match = ACTION_READ.exec(line)) !== null) {
-      claims.push({
+      prefix = line.slice(
+        Math.max(0, match.index - CONTEXT_REACH),
+        match.index,
+      );
+      if (isNegated(prefix) || isAttributed(prefix)) continue;
+      const target = normalizeActionTarget(match[1] ?? '');
+      add({
         kind: 'action',
         text: match[0].trim(),
-        target: match[1],
+        ...(target === undefined ? {} : { target }),
         line: index,
       });
     }
 
     ACTION_RUN.lastIndex = 0;
     while ((match = ACTION_RUN.exec(line)) !== null) {
-      const target = match[1]?.trim();
-      if (target !== undefined && target !== '') {
-        claims.push({
-          kind: 'action',
-          text: match[0].trim(),
-          target,
-          line: index,
-        });
-      }
+      prefix = line.slice(
+        Math.max(0, match.index - CONTEXT_REACH),
+        match.index,
+      );
+      if (isNegated(prefix) || isAttributed(prefix)) continue;
+      const target = normalizeActionTarget(match[1] ?? '');
+      add({
+        kind: 'action',
+        text: match[0].trim(),
+        ...(target === undefined ? {} : { target }),
+        line: index,
+      });
     }
 
     TESTS.lastIndex = 0;
     if ((match = TESTS.exec(line)) !== null) {
-      claims.push({
-        kind: 'tests',
-        text: match[0].trim(),
-        ...(match[1] === undefined ? {} : { target: match[1].trim() }),
-        line: index,
-      });
+      prefix = line.slice(
+        Math.max(0, match.index - CONTEXT_REACH),
+        match.index,
+      );
+      if (!isNegated(prefix) && !isAttributed(prefix)) {
+        add({
+          kind: 'tests',
+          text: match[0].trim(),
+          ...(match[1] === undefined ? {} : { target: match[1].trim() }),
+          line: index,
+        });
+      }
     }
   });
 
   // A message that asserts completion without a single checkable claim.
   const assertsCompletion =
     /\b(done|complete[d]?|finished|all set|that'?s it|that'?s that|ready)\b/i.test(
-      narration,
+      scanned,
     );
   if (claims.length === 0 && assertsCompletion) {
     claims.push({
       kind: 'vague',
-      text: narration.trim().slice(0, 120),
+      text: scanned.trim().replace(/\s+/gu, ' ').slice(0, 120),
       line: 0,
     });
   }
@@ -150,6 +386,25 @@ export interface Transcript {
 function basename(target: string): string {
   const slash = target.lastIndexOf('/');
   return slash === -1 ? target : target.slice(slash + 1);
+}
+
+/** A match that cannot land inside a longer word, where one is meaningful. */
+function wordMatcher(token: string): RegExp {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const left = /^\w/u.test(token) ? '\\b' : '';
+  const right = /\w$/u.test(token) ? '\\b' : '';
+  return new RegExp(`${left}${escaped}${right}`, 'i');
+}
+
+/**
+ * Whether a target names something a command line could actually contain.
+ *
+ * A bare English word ("config", "deploy script") cannot be located in a
+ * command without guessing, and guessing here is how a fabricated action turns
+ * into a pass. Unlocatable targets stay inconclusive instead.
+ */
+function isCommandShaped(target: string): boolean {
+  return /[./\-_@\s]/u.test(target) || TEST_RUNNER.test(target);
 }
 
 /**
@@ -213,9 +468,15 @@ export function verifyAgainstTranscript(
         break;
       }
       case 'action': {
+        if (!isCommandShaped(target)) {
+          verdicts.set(claim, 'inconclusive');
+          break;
+        }
         const needle = basename(target);
+        const exact = wordMatcher(target);
+        const loose = wordMatcher(needle);
         const hit = transcript.commands.some(
-          (command) => command.includes(target) || command.includes(needle),
+          (command) => exact.test(command) || loose.test(command),
         );
         verdicts.set(claim, hit ? 'pass' : 'fail');
         break;
@@ -260,9 +521,10 @@ export function probeFor(claim: Claim): string | undefined {
     case 'artifact':
       return target === undefined ? undefined : `test -e ${quote(target)}`;
     case 'tests':
-      return 'npm test';
     case 'action':
-      // No general probe: what "it ran" means depends entirely on the command.
+      // No probe: re-running a suite is not a re-read of state, it is a second
+      // execution with its own effects. A tests claim with no recorded outcome
+      // stays inconclusive, which is what it is.
       return undefined;
     default:
       return undefined;
@@ -349,16 +611,18 @@ export function annotateIfUnverified(
 ): string {
   if (report.complete) return narration;
   const lines: string[] = [];
+  const quote = (claim: Claim): string =>
+    claim.text.trim() === '' ? `(${claim.kind} claim)` : claim.text;
   if (report.failures.length > 0) {
     lines.push('Before calling this done, some claims did not hold up:');
     for (const claim of report.failures) {
-      lines.push(`  - not supported by this turn's record: "${claim.text}"`);
+      lines.push(`  - not supported by this turn's record: "${quote(claim)}"`);
     }
   }
   if (report.inconclusive.length > 0) {
     lines.push('Claims I could not verify independently:');
     for (const claim of report.inconclusive) {
-      lines.push(`  - "${claim.text}" (no independent check available)`);
+      lines.push(`  - "${quote(claim)}" (no independent check available)`);
     }
   }
   lines.push('');

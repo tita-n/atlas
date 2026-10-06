@@ -13,6 +13,7 @@ import {
   extractClaims,
   probeFor,
   verifyAgainstTranscript,
+  writtenPathsFrom,
   type Transcript,
 } from '../../src/integrity/completion-claims.js';
 import {
@@ -237,6 +238,208 @@ describe('the completion gate', () => {
   });
 });
 
+describe('claims that must not pass', () => {
+  it('does not credit this turn with a quoted third-party claim', () => {
+    // The shape of a false pass: the words are there, the turn did not do it.
+    const narration =
+      'The build bot said "I wrote src/app.ts". That is complete.';
+    const claims = extractClaims(narration);
+    expect(claims.some((claim) => claim.kind === 'artifact')).toBe(false);
+    const report = buildReport({
+      claims,
+      transcript: { commands: [], written: ['src/app.ts'] },
+    });
+    expect(report.complete).toBe(false);
+  });
+
+  it('does not read a claim out of a fenced code block', () => {
+    const fenced = 'Here is the diff:\n```diff\n+ wrote src/app.ts\n```';
+    expect(
+      extractClaims(fenced).some((claim) => claim.kind === 'artifact'),
+    ).toBe(false);
+    // Same sentence outside the fence is a claim, so the fence is what changed.
+    expect(
+      extractClaims('Here is the diff:\n+ wrote src/app.ts').some(
+        (claim) => claim.kind === 'artifact',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not turn a denial into a completion claim', () => {
+    const narration = 'I never wrote src/app.ts. Done.';
+    expect(
+      extractClaims(narration).some((claim) => claim.kind === 'artifact'),
+    ).toBe(false);
+    const report = buildReport({
+      claims: extractClaims(narration),
+      transcript: { commands: [], written: ['src/app.ts'] },
+    });
+    expect(report.complete).toBe(false);
+  });
+
+  it('does not turn a negated test result into a passing test claim', () => {
+    // "Not all tests pass" is not a claim that they pass.
+    expect(
+      extractClaims('Not all tests pass yet.').some(
+        (claim) => claim.kind === 'tests',
+      ),
+    ).toBe(false);
+  });
+
+  it('scopes a negation to its own clause', () => {
+    const claims = extractClaims(
+      'I did not read the config, but I read src/app.ts',
+    );
+    expect(
+      claims.some(
+        (claim) => claim.kind === 'action' && claim.target === 'src/app.ts',
+      ),
+    ).toBe(true);
+    expect(claims.some((claim) => claim.target === 'config')).toBe(false);
+  });
+
+  it('extracts a path written outside ASCII', () => {
+    const claim = onlyClaim('I wrote 日本語/ファイル.ts');
+    expect(claim.target).toBe('日本語/ファイル.ts');
+  });
+
+  it('will not score an action claim by matching an ordinary word', () => {
+    // "the" is grammar, not a command: a substring match on it made any
+    // command mentioning "the" a pass.
+    const report = buildReport({
+      claims: extractClaims('I ran the deploy script.'),
+      transcript: { commands: ['cat the config'] },
+    });
+    expect(report.results[0]?.verdict).not.toBe('pass');
+    expect(report.complete).toBe(false);
+  });
+
+  it('still passes an action claim the turn really ran', () => {
+    const report = buildReport({
+      claims: extractClaims('I ran npx tsc --noEmit'),
+      transcript: { commands: ['npx tsc --noEmit'] },
+    });
+    expect(report.complete).toBe(true);
+  });
+});
+
+describe('extraction stays honest and bounded', () => {
+  it('extracts the same claims on every call', () => {
+    // Module-level /g patterns keep a lastIndex between calls unless something
+    // resets it; a silent second-call skip is the failure this guards.
+    const narration =
+      'I wrote a.ts and created b.ts, ran src/tool.ts and all 3 tests pass.';
+    const first = extractClaims(narration);
+    const second = extractClaims(narration);
+    expect(second).toEqual(first);
+    expect(first.filter((claim) => claim.kind === 'artifact')).toHaveLength(2);
+  });
+
+  it('handles a very large message in linear time', { timeout: 20_000 }, () => {
+    const narration =
+      'I wrote src/a.ts and ran npm test. All tests pass.\n'.repeat(8_000);
+    const started = Date.now();
+    const claims = extractClaims(narration);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(claims.length).toBeGreaterThan(0);
+  });
+
+  it('does not invent an artifact for a path containing spaces', () => {
+    // Nothing checkable to verify, so the message is reported, not passed.
+    const claims = extractClaims(
+      'I wrote /home/titan/my file.ts. That is complete.',
+    );
+    expect(claims.some((claim) => claim.kind === 'artifact')).toBe(false);
+  });
+});
+
+describe('the annotation', () => {
+  it('still disclaims when the narration is empty', () => {
+    const annotated = annotateIfUnverified('', {
+      complete: false,
+      results: [],
+      failures: [{ kind: 'vague', text: 'something', line: 0 }],
+      inconclusive: [],
+    });
+    expect(annotated).toContain('unconfirmed, not finished');
+  });
+
+  it('names a claim by kind when its text is blank', () => {
+    const annotated = annotateIfUnverified('here is the summary', {
+      complete: false,
+      results: [],
+      failures: [],
+      inconclusive: [{ kind: 'action', text: '', line: 0 }],
+    });
+    expect(annotated).toContain('(action claim)');
+  });
+
+  it('never returns something readable as success for an unproven message', () => {
+    const narration = 'I wrote src/app.ts.';
+    const annotated = annotateIfUnverified(
+      narration,
+      buildReport({
+        claims: extractClaims(narration),
+        transcript: { commands: [] },
+      }),
+    );
+    expect(annotated).not.toBe(narration);
+    expect(annotated).toContain('unconfirmed, not finished');
+    // The model's own words are still there: the gate annotates.
+    expect(annotated.endsWith(narration)).toBe(true);
+  });
+});
+
+describe('written paths from a real turn', () => {
+  it('settles a genuine completion instead of defaulting to inconclusive', () => {
+    // Without this, every artifact claim stays inconclusive and the gate would
+    // annotate almost every ordinary completion - fail-closed, but noise that
+    // trains people to ignore it.
+    const outcomes = [
+      { command: 'touch src/app.ts', ok: true },
+      { command: 'npm test', ok: true },
+    ];
+    const transcript = {
+      commands: outcomes.map((o) => o.command),
+      outcomes,
+      written: writtenPathsFrom(outcomes),
+    };
+    const report = buildReport({
+      claims: extractClaims('I wrote src/app.ts and all tests pass.'),
+      transcript,
+    });
+    expect(report.complete).toBe(true);
+  });
+
+  it('still fails a genuine-looking claim when the tests actually failed', () => {
+    const outcomes = [
+      { command: 'touch src/app.ts', ok: true },
+      { command: 'npm test', ok: false },
+    ];
+    const report = buildReport({
+      claims: extractClaims('I wrote src/app.ts and all tests pass.'),
+      transcript: {
+        commands: outcomes.map((o) => o.command),
+        outcomes,
+        written: writtenPathsFrom(outcomes),
+      },
+    });
+    expect(report.complete).toBe(false);
+  });
+
+  it('does not count a write that failed', () => {
+    expect(
+      writtenPathsFrom([{ command: 'touch src/app.ts', ok: false }]),
+    ).toEqual([]);
+  });
+
+  it('does not read paths out of a read-only command', () => {
+    expect(writtenPathsFrom([{ command: 'cat src/app.ts', ok: true }])).toEqual(
+      [],
+    );
+  });
+});
+
 describe('planning bias', () => {
   it('adds a planning beat only above the shared threshold', () => {
     expect(planningNudge('what time is it')).toBeUndefined();
@@ -275,5 +478,28 @@ describe('planning bias', () => {
   it('does not plan for an empty message', () => {
     expect(shouldPlan('')).toBe(false);
     expect(estimateComplexity('')).toBe(0);
+  });
+
+  it('does not nudge a trivial question for ordinary connective words', () => {
+    // Three discourse words is not three steps.
+    expect(
+      planningNudge(
+        'first of all, is there a next step? also, should I bother at all?',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('does not read abbreviations as files', () => {
+    expect(estimateComplexity('what does e.g. mean here')).toBeLessThan(
+      DEFAULT_COMPLEXITY_THRESHOLD,
+    );
+  });
+
+  it('still nudges a request that names files and sequences steps', () => {
+    expect(
+      planningNudge(
+        'rename src/a.ts to src/b.ts then update the imports and the docs',
+      ),
+    ).toBeDefined();
   });
 });

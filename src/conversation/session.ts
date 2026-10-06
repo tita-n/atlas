@@ -42,6 +42,7 @@ import {
   annotateIfUnverified,
   buildReport,
   extractClaims,
+  writtenPathsFrom,
   type Transcript,
 } from '../integrity/completion-claims.js';
 import { planningNudge } from '../integrity/plan-first.js';
@@ -347,6 +348,14 @@ export class AssistantSession {
         command: record.command,
         ok: record.ok,
       })),
+      // Paths this turn actually wrote, so an artifact claim can be settled
+      // without a probe rather than defaulting to inconclusive every time.
+      written: writtenPathsFrom(
+        this.ledger.records.map((record) => ({
+          command: record.command,
+          ok: record.ok,
+        })),
+      ),
     };
   }
 
