@@ -15,6 +15,16 @@ export interface SystemPromptInput {
   readonly facts?: readonly string[];
   /** Brief planning instruction for non-trivial work; omitted otherwise. */
   readonly planningNote?: string | undefined;
+  /**
+   * Per-turn identity section.
+   *
+   * Required rather than optional on purpose: the research is unambiguous
+   * that identity does not survive on conversation history alone, so this
+   * cannot be something a caller may forget to pass.
+   */
+  readonly identity: string;
+  /** Whether this turn was automation-triggered rather than conversational. */
+  readonly automated?: boolean | undefined;
   /** Instructions for the narration / execution boundary. */
   readonly narrationRule?: string;
   /** Names of the tools actually available this turn. */
@@ -69,7 +79,10 @@ function section(title: string, lines: readonly string[]): string {
 
 /** Builds the system prompt for one turn. */
 export function buildTurnPrompt(input: SystemPromptInput): string {
-  const parts: string[] = [input.personality.trim()];
+  // Identity first, so it holds even if the editable personality is replaced.
+  // The persona must be anchored structurally on every turn rather than left
+  // for history to carry forward.
+  const parts: string[] = [input.identity.trim(), input.personality.trim()];
   parts.push(input.narrationRule ?? NARRATION_RULE);
   parts.push(toolsSection(input.availableTools ?? []));
   parts.push(section('Corrections you must follow', input.corrections ?? []));

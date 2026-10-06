@@ -28,6 +28,7 @@ import {
   buildTurnPrompt,
   NARRATION_RULE,
 } from '../../src/conversation/system-prompt.js';
+import { identitySection } from '../../src/identity/identity-block.js';
 import {
   loadPersonality,
   DEFAULT_PERSONALITY,
@@ -223,6 +224,7 @@ describe('narration and execution separation', () => {
 describe('system prompt assembly', () => {
   it('includes personality, tools, corrections, and relevant facts', () => {
     const prompt = buildTurnPrompt({
+      identity: identitySection(),
       personality: 'You are Atlas.',
       availableTools: ['shell'],
       corrections: ['Never abbreviate agora'],
@@ -237,6 +239,7 @@ describe('system prompt assembly', () => {
 
   it('omits empty sections entirely', () => {
     const prompt = buildTurnPrompt({
+      identity: identitySection(),
       personality: 'You are Atlas.',
       availableTools: [],
     });
@@ -247,6 +250,7 @@ describe('system prompt assembly', () => {
 
   it('states there is exactly one tool and no memory tools', () => {
     const prompt = buildTurnPrompt({
+      identity: identitySection(),
       personality: 'x',
       availableTools: ['shell'],
     });

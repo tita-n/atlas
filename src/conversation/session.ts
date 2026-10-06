@@ -46,6 +46,7 @@ import {
   type Transcript,
 } from '../integrity/completion-claims.js';
 import { planningNudge } from '../integrity/plan-first.js';
+import { identitySection } from '../identity/identity-block.js';
 
 /** One executed tool call, as a front-end needs it to render a tool block. */
 export interface TurnToolCall {
@@ -164,6 +165,13 @@ export interface CreateSessionOptions {
   readonly onPersonalityNotice?: ((message: string) => void) | undefined;
   readonly onConfirmNotice?: ((message: string) => void) | undefined;
   readonly onTimeoutNotice?: ((message: string) => void) | undefined;
+  /**
+   * Whether turns from this session are automation-triggered.
+   *
+   * Automation turns are where the identity research saw the failure, so the
+   * identity block is restated rather than merely present for them.
+   */
+  automated?: boolean | undefined;
   readonly now?: (() => number) | undefined;
 }
 
@@ -182,6 +190,13 @@ export interface AssistantSessionOptions {
   readonly onConfirmNotice?: ((message: string) => void) | undefined;
   readonly now?: (() => number) | undefined;
   readonly onTimeoutNotice?: ((message: string) => void) | undefined;
+  /**
+   * Whether turns from this session are automation-triggered.
+   *
+   * Automation turns are where the identity research saw the failure, so the
+   * identity block is restated rather than merely present for them.
+   */
+  automated?: boolean | undefined;
 }
 
 /** One assistant, persistent across restarts. */
@@ -388,6 +403,12 @@ export class AssistantSession {
     );
     this.#options.conversation.setSystemPrompt(
       buildTurnPrompt({
+        // Rebuilt every turn. Continuity comes from this being structurally
+        // present each time, not from history carrying it forward.
+        identity: identitySection({
+          userMessage: message,
+          ...(this.#options.automated === true ? { automated: true } : {}),
+        }),
         personality: this.personality,
         corrections: context.corrections,
         facts: context.memories,
