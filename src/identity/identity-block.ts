@@ -25,9 +25,42 @@
 /** The name the user talks to. Fixed, and independent of any provider. */
 export const ATLAS_IDENTITY = 'Atlas';
 
-/** A direct question about what the user is talking to. */
-const IDENTITY_QUESTION =
-  /\b(who\s+are\s+you|what\s+are\s+you|what'?s\s+your\s+name|are\s+you\s+(?:an?\s+)?(?:ai|bot|model|claude|gpt|chatgpt|gemini|llama|copilot|grok|mistral|deepseek|qwen)|what\s+model\s+are\s+you|which\s+model\s+are\s+you|are\s+you\s+(?:gpt|claude|gemini|llama|chatgpt))\b/i;
+/**
+ * A direct question about what the user is talking to.
+ *
+ * Deliberately non-global: a `/g` regex on a module-level constant carries
+ * `lastIndex` between calls and makes the result of an identical message
+ * depend on which message was tested before it. Alternation is ordered
+ * longest-and-most-specific first purely for readability; order does not
+ * affect the boolean result.
+ */
+const IDENTITY_QUESTION = new RegExp(
+  [
+    // Direct self-reference.
+    String.raw`\b(?:who\s+are\s+you|what\s+are\s+you)\b`,
+    String.raw`\bwhat'?s\s+your\s+name\b`,
+    // "What is this?" addressed to the agent, not to a file or an error.
+    String.raw`\bwhat'?s\s+this\s*[?!]?\s*$`,
+    // Identity asked as a category rather than by name.
+    String.raw`\bare\s+you\s+(?:an?\s+)?(?:ai|llm|bot|chatbot|model|assistant|human)\b`,
+    // Named-vendor questions. The vendor list lives here only so a direct
+    // "are you Claude?" is recognised; it never reaches the prompt.
+    String.raw`\bare\s+you\s+(?:claude|gpt|chatgpt|gemini|llama|copilot|grok|mistral|deepseek|qwen)\b`,
+    String.raw`\b(?:what|which)\s+model\s+are\s+you\b`,
+    String.raw`\b(?:what|which)\s+ai\s+are\s+you\b`,
+    // Attribution.
+    String.raw`\b(?:who|what)\s+(?:company\s+)?(?:made|built|created|trained)\s+you\b`,
+    // Requests for a self-introduction.
+    String.raw`\bintroduce\s+yourself\b`,
+    String.raw`\b(?:tell\s+me\s+about\s+yourself|tell\s+me\s+what\s+you\s+are)\b`,
+    String.raw`\b(?:name|identify)\s+yourself\b`,
+    // Bare "your name?" as a whole message. Constrained so that instructions
+    // about *renaming things* ("change your name, then run the tests") do not
+    // sharpen an ordinary work turn.
+    String.raw`\byour\s+name\s*[?!]?\s*$`,
+  ].join('|'),
+  'i',
+);
 
 /**
  * Whether a message is asking about identity directly.
@@ -36,6 +69,7 @@ const IDENTITY_QUESTION =
  * answers in its own words, but is told plainly which identity to speak from.
  */
 export function isIdentityQuestion(message: string): boolean {
+  if (message.trim() === '') return false;
   return IDENTITY_QUESTION.test(message);
 }
 
