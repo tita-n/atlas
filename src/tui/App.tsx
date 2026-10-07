@@ -667,7 +667,9 @@ export function AtlasApp({
           setModal('autonomy');
         }
         if (command.name === 'init') {
-          setWizardStep('provider');
+          // Same step as the typed route. 'provider' handled only arrows and
+          // Enter, so typing a filter there was silently discarded.
+          setWizardStep('search');
           setWizardKey('');
           setModal('init');
         }

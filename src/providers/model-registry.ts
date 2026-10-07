@@ -20,7 +20,7 @@
  * and parsed lazily. Nothing in this module blocks startup.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** The one endpoint Atlas needs. Kept here so it can be overridden in tests. */
@@ -332,7 +332,12 @@ export async function refreshRegistry(
 async function writeCache(path: string, cache: CacheFile): Promise<void> {
   try {
     await mkdir(join(path, '..'), { recursive: true });
-    await writeFile(path, JSON.stringify(cache), { mode: 0o600 });
+    // Atomic: the background refresh can rewrite this while a read is in
+    // flight, and a partial file parses as an empty catalogue - which is how
+    // /init ended up offering only the custom-endpoint row.
+    const temporary = `${path}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(cache), { mode: 0o600 });
+    await rename(temporary, path);
   } catch {
     // A cache that cannot be written costs a refetch, not correctness.
   }
