@@ -235,14 +235,24 @@ export async function loadRegistry(
   const path = cachePath(options.atlasHome);
   const cached = await readCache(path);
 
-  if (cached !== undefined && isFresh(cached.fetchedAt, ttlMs, now())) {
+  // Cache first, always. The dataset is large and the network is not reliable,
+  // so a usable cache is served immediately and refreshed in the background.
+  // Startup and /init must never wait on models.dev when the answer is already
+  // on disk.
+  if (cached !== undefined) {
+    const fresh = isFresh(cached.fetchedAt, ttlMs, now());
+    if (!fresh) {
+      // Stale-while-revalidate: serve what we have, refresh underneath. A failed
+      // refresh can never turn into a failed read.
+      void refreshIntoCache(path, options, now).catch(() => undefined);
+    }
     return {
       snapshot: {
         providers: parseRegistry(cached.payload),
         fetchedAt: cached.fetchedAt,
         source: 'cache',
       },
-      stale: false,
+      stale: !fresh,
     };
   }
 
@@ -273,18 +283,8 @@ export async function loadRegistry(
       stale: false,
     };
   } catch (error) {
-    // Unreachable or malformed: fall back to whatever was cached, even if old.
-    if (cached !== undefined) {
-      return {
-        snapshot: {
-          providers: parseRegistry(cached.payload),
-          fetchedAt: cached.fetchedAt,
-          source: 'cache',
-        },
-        stale: true,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+    // No usable cache was present earlier - the cached path returns before the
+    // network is ever touched - so there is nothing to fall back to.
     return {
       snapshot: { providers: [], fetchedAt: 0, source: 'cache' },
       stale: true,
@@ -447,4 +447,33 @@ export async function modelExpectsInlineReasoning(
     if (found !== undefined) return found.reasoning;
   }
   return false;
+}
+
+/**
+ * Fetches and writes the cache without disturbing a caller already served.
+ *
+ * Used by the stale-while-revalidate path, so a failed refresh can never turn
+ * into a failed read: /init keeps working on the cached catalogue even when
+ * models.dev is unreachable.
+ */
+async function refreshIntoCache(
+  path: string,
+  options: RegistryOptions,
+  now: () => number,
+): Promise<void> {
+  const doFetch = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  try {
+    const response = await doFetch(options.url ?? MODELS_DEV_URL, {
+      signal: controller.signal,
+    });
+    if (!response.ok) return;
+    const payload: unknown = await response.json();
+    await writeCache(path, { fetchedAt: now(), payload });
+  } finally {
+    clearTimeout(timer);
+  }
 }

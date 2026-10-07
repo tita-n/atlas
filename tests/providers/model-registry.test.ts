@@ -284,7 +284,10 @@ describe('caching and refresh', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('falls back to a stale cache when the network fails', async () => {
+  it('serves a stale cache without blocking on the network', async () => {
+    // Stale-while-revalidate: the cached catalogue is returned immediately and
+    // the refresh happens underneath, so an unreachable network degrades the
+    // data rather than the feature.
     const home = await tempHome();
     await loadRegistry({
       atlasHome: home,
@@ -297,7 +300,6 @@ describe('caching and refresh', () => {
     });
     // Degrades to older data with a notice rather than failing outright.
     expect(result.stale).toBe(true);
-    expect(result.error).toContain('offline');
     expect(result.snapshot.providers).toHaveLength(3);
   });
 
