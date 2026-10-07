@@ -401,3 +401,24 @@ export function formatPrice(
   if (input === 0 && output === 0) return 'free';
   return `$${input}/$${output} per Mtok`;
 }
+
+/**
+ * Whether a model is known to emit reasoning inline.
+ *
+ * Read from the cached registry, so it never blocks on the network. This is a
+ * mitigation, not a guarantee: the dataset is community-maintained and has gaps,
+ * which is why tag stripping still runs for every model regardless.
+ */
+export async function modelExpectsInlineReasoning(
+  atlasHome: string,
+  model: string,
+): Promise<boolean> {
+  const { snapshot } = await loadRegistry({ atlasHome });
+  for (const provider of snapshot.providers) {
+    const found = provider.models.find(
+      (entry) => entry.id === model || entry.name === model,
+    );
+    if (found !== undefined) return found.reasoning;
+  }
+  return false;
+}

@@ -17,6 +17,14 @@ import type { ConversationRepository } from '../memory/conversation-repository.j
 export interface ConversationOptions {
   /** Model identifier sent with every request. */
   model: string;
+  /**
+   * Whether this model is known to emit reasoning inline.
+   *
+   * Only such a model needs the filter to hold the opening of a response,
+   * which is what catches a bare closing tag arriving after text has already
+   * been released. Ordinary replies stream immediately either way.
+   */
+  expectsInlineReasoning?: boolean | undefined;
   /** Optional generation token limit. */
   maxTokens?: number;
   /** Optional sampling temperature. */
@@ -132,6 +140,11 @@ export class Conversation {
   /** The model currently used for requests. */
   public get model(): string {
     return this.#options.model;
+  }
+
+  /** Whether the active model is known to emit reasoning inline. */
+  public get modelExpectsReasoning(): boolean {
+    return this.#options.expectsInlineReasoning === true;
   }
 
   /** Clears working history without deleting persisted rows. */
@@ -304,7 +317,9 @@ export class Conversation {
     const guard = new NarrationStreamGuard();
     // Reasoning is separated live, before the leakage guard ever sees it, so
     // an inline <think> block cannot reach the display even mid-tag.
-    const reasoningFilter = new ReasoningFilter();
+    const reasoningFilter = new ReasoningFilter({
+      expectsInlineReasoning: this.#options.expectsInlineReasoning === true,
+    });
     let content = '';
     let toolCalls: ToolCall[] = [];
     let usage: CompletionUsage | undefined;
@@ -318,14 +333,14 @@ export class Conversation {
 
     for await (const event of streamTurn(request)) {
       if (event.type === 'text') {
-        // Reasoning is separated before the leakage guard ever sees it, so an
-        // inline <think> block cannot reach the display even mid-tag.
-        const narrationText = reasoningFilter.push(event.text);
-        content += narrationText;
-        if (narrationText !== '') {
+        // Reasoning arrives on its own lane and is never merged into content,
+        // so an inline block cannot reach the display even mid-tag.
+        for (const delta of reasoningFilter.push(event.text)) {
+          if (delta.lane !== 'text') continue;
+          content += delta.text;
           // Only the guard-approved prefix is shown; a suspected payload is
           // withheld rather than displayed and retracted later.
-          const safe = guard.push(narrationText);
+          const safe = guard.push(delta.text);
           if (safe !== '') onNarrationDelta(safe);
         }
         continue;
@@ -340,7 +355,10 @@ export class Conversation {
 
     // End of stream: flush both filters, then reject an answer-less generation
     // rather than presenting a dangling fragment as a reply.
-    const remaining = reasoningFilter.finish();
+    let remaining = '';
+    for (const delta of reasoningFilter.finish()) {
+      if (delta.lane === 'text') remaining += delta.text;
+    }
     content += remaining;
     const tail = guard.push(remaining) + guard.flush();
     if (tail !== '') onNarrationDelta(tail);

@@ -1,286 +1,274 @@
 /**
- * Separating model reasoning from the answer the user should see.
+ * Separating model reasoning from the answer, as a first-class lane.
  *
- * Reasoning reaches a harness in two unrelated ways. Providers with a dedicated
- * reasoning channel send it in a separate field, which must be kept out of the
- * narration stream entirely. Open-weight models served through free routers
- * instead write it inline, wrapped in tags, and that inline form has three real
- * shapes - not one:
+ * This follows the design every mature harness converged on rather than
+ * inventing a fourth one:
  *
- *   complete      <think>...</think> answer
- *   unterminated  <think>...            (output budget ran out mid-reasoning)
- *   bare closer   ...</think> answer     (no opening tag at all)
+ *   - Reasoning is its own typed lane, never merged into the answer and then
+ *     split back out.
+ *   - A family of tag names is matched - think, thinking, thought, reasoning,
+ *     internal, antthinking, and the mm:/antml: prefixed variants - tolerating
+ *     whitespace, a namespace prefix, and any casing. Matching one literal is
+ *     how the original bug survives as <THINK>.
+ *   - A tag is classified three ways: partial (hold for more input), confirmed,
+ *     or invalid (release as ordinary text). A binary hold/release cannot
+ *     express "this might still become a tag".
+ *   - Tags inside a fenced code block are literal text, so a code sample
+ *     containing a think tag survives.
+ *   - There are no character caps. A cap releases reasoning it should have
+ *     held, which is precisely how a monologue reaches the user.
  *
- * The bare-closer and unterminated cases are the ones that break naive
- * handling. A regex needing both tags never matches an unterminated block, so
- * the entire reasoning fragment survives into the reply - which is exactly the
- * reported failure, where the user saw raw reasoning and then nothing.
- *
- * This is incremental by construction: tags routinely straddle stream chunks
- * (`<th` in one, `ink>` in the next), so text is only released once it cannot
- * turn out to be part of a tag or of a reasoning span.
+ * A model known to emit reasoning inline is handled by starting in the reasoning
+ * state and holding until the tag can be classified. That catches a bare closing
+ * tag with no opener, and needs no cap because the wait ends at the closer.
  */
 
-/**
- * How much leading content is held before deciding it is not reasoning.
- *
- * The bare-closer shape puts reasoning FIRST, so a closer can arrive after text
- * has already been released - and released text cannot be retracted. The only
- * way to catch it is to hold the opening of the response for a bounded window.
- * Past that window the stream is treated as ordinary narration, which keeps
- * latency bounded at the cost of missing an unusually long unclosed block.
- */
-export const LEADING_HOLD_CHARS = 128;
+export const REASONING_TAG_NAMES: readonly string[] = [
+  'think',
+  'thinking',
+  'thought',
+  'reasoning',
+  'internal',
+  'antthinking',
+];
 
-export const OPEN_TAG = '<think>';
-export const CLOSE_TAG = '</think>';
+const TAG_PREFIXES: readonly string[] = ['', 'mm:', 'antml:'];
 
-/**
- * Tags are matched case-insensitively.
- *
- * Reasoners are not consistent about casing, and `<THINK>trace</THINK>` is a
- * reasoning block whether or not it is spelled the way the canonical tag is.
- * Matching exactly would hand the whole block to the user. Whitespace just
- * before the bracket is tolerated for the same reason. Matching is still
- * anchored: `<thinking>` remains ordinary text, because nothing may follow the
- * tag name.
- */
-const OPEN_TAG_PATTERN = /<think\s*>/gi;
-const CLOSE_TAG_PATTERN = /<\/think\s*>/gi;
+/** A complete tag, tolerating whitespace, a prefix, casing, and attributes. */
+const TAG_RE = new RegExp(
+  `<\\s*(/?)\\s*(?:(?:antml|mm):)?(?:${REASONING_TAG_NAMES.join('|')})\\b[^>]*>`,
+  'i',
+);
 
-/**
- * Longest prefix of either tag that could still be completed.
- *
- * One past the tag length, because the trailing whitespace of `<think ` is
- * still part of an unfinished tag rather than content.
- */
-const MAX_TAG_PREFIX = OPEN_TAG.length + 1;
+/** Literal spellings, for recognising a tag that has only partly arrived. */
+const CANDIDATE_TAGS: readonly string[] = TAG_PREFIXES.flatMap((prefix) =>
+  REASONING_TAG_NAMES.flatMap((name) => [
+    `<${prefix}${name}>`,
+    `</${prefix}${name}>`,
+  ]),
+);
 
-/** Case-folded tags, for prefix comparison of a partial tag. */
-const OPEN_TAG_FOLDED = OPEN_TAG.toUpperCase();
-const CLOSE_TAG_FOLDED = CLOSE_TAG.toUpperCase();
+const FENCE = '```';
 
-/** A located tag: where it starts and how many characters it spans. */
-interface TagMatch {
-  readonly index: number;
-  readonly length: number;
+export type Lane = 'text' | 'reasoning';
+
+export interface Delta {
+  readonly lane: Lane;
+  readonly text: string;
 }
 
-/** Stand-in for a tag that is not present: sorts after every real match. */
-const NO_TAG: TagMatch = { index: Infinity, length: 0 };
-
-/** First tag match at or after `from`, or null. */
-function findTag(pattern: RegExp, text: string, from: number): TagMatch | null {
-  pattern.lastIndex = from;
-  const match = pattern.exec(text);
-  return match === null
-    ? null
-    : { index: match.index, length: match[0].length };
-}
+type TagVerdict =
+  | {
+      readonly kind: 'confirmed';
+      readonly close: boolean;
+      readonly length: number;
+    }
+  | { readonly kind: 'partial' }
+  | { readonly kind: 'invalid' };
 
 /**
- * Whether the buffered opening reads like an answer rather than a monologue.
+ * Classifies what sits at `at`.
  *
- * Structured text - a line break, a list, a heading - is overwhelmingly an
- * answer; reasoning traces are prose without shape. Releasing on that signal
- * keeps the cost of the leading hold to one chunk for ordinary replies.
+ * `partial` means the remainder could still grow into a real tag, so it is held
+ * rather than shown: a half-arrived `<th` must never reach the screen, and
+ * neither must the reasoning behind it.
  */
-function looksLikeProse(text: string): boolean {
-  return /[\n]\s*(?:[-*#]|\d+[.)])\s|\n\n|\n- /.test(text);
-}
-
-/** Trailing run of characters that might be the start of a tag. */
-function partialTagLength(text: string): number {
-  // Up to the full tag length, not one short: `</think` is the whole closer
-  // minus its final character, and must still be held rather than misread as
-  // reasoning content.
-  for (
-    let length = Math.min(MAX_TAG_PREFIX, text.length);
-    length > 0;
-    length -= 1
-  ) {
-    const tail = text.slice(text.length - length);
-    // An unfinished tag may still be waiting for its bracket, so compare the
-    // part before any trailing whitespace.
-    const stem = tail.replace(/\s+$/, '');
-    if (stem === '') continue;
-    const folded = stem.toUpperCase();
+function classifyTagAt(text: string, at: number): TagVerdict {
+  const match = TAG_RE.exec(text.slice(at));
+  if (match !== null && match.index === 0) {
+    return {
+      kind: 'confirmed',
+      close: match[1] === '/',
+      length: match[0].length,
+    };
+  }
+  const tail = text.slice(at).toLowerCase();
+  for (const candidate of CANDIDATE_TAGS) {
     if (
-      OPEN_TAG_FOLDED.startsWith(folded) ||
-      CLOSE_TAG_FOLDED.startsWith(folded)
+      candidate.length > tail.length &&
+      candidate.toLowerCase().startsWith(tail)
     ) {
-      return length;
+      return { kind: 'partial' };
     }
   }
-  return 0;
+  return { kind: 'invalid' };
 }
 
-export interface ReasoningSplit {
-  /** Text the user should see. */
-  readonly narration: string;
-  /** Reasoning seen so far. Never merged into narration. */
-  readonly reasoning: string;
-  /** True while the stream is still inside an opening-tagged block. */
-  readonly insideReasoning: boolean;
-  /** True when a closer arrived with no opener: earlier text was reasoning. */
-  readonly sawBareCloser: boolean;
+export interface FilterOptions {
+  /**
+   * Whether this model is known to emit reasoning inline.
+   *
+   * True starts in the reasoning state and holds until the tag can be
+   * classified, which is what catches a bare closing tag. False applies no
+   * opening hold at all, so ordinary replies stream immediately; complete and
+   * unterminated blocks are still stripped, because neither needs a hold.
+   */
+  readonly expectsInlineReasoning?: boolean;
 }
 
-/**
- * Incremental reasoning filter.
- *
- * Feed it the content stream; it hands back whatever is now safe to show.
- */
 export class ReasoningFilter {
   #held = '';
   #reasoning = '';
-  #inside = false;
+  #inside: boolean;
+  #sawAnswer = false;
   #sawBareCloser = false;
-  /** Whether narration has been handed to the caller. */
-  #released = false;
+  /** Whether an opening reasoning tag was ever actually observed. */
+  #sawOpener = false;
+  readonly #expectsReasoning: boolean;
 
-  /** Whether the stream is currently inside an opening-tagged block. */
-  public get insideReasoning(): boolean {
-    return this.#inside;
+  public constructor(options: FilterOptions = {}) {
+    this.#expectsReasoning = options.expectsInlineReasoning === true;
+    this.#inside = this.#expectsReasoning;
   }
 
-  /** True when a closer arrived with no matching opener. */
-  public get sawBareCloser(): boolean {
-    return this.#sawBareCloser;
-  }
-
-  /** Reasoning accumulated so far. */
   public get reasoning(): string {
     return this.#reasoning;
   }
 
-  /** Text the user should see, deferred until known to be safe. */
-  public get pending(): string {
-    return this.#held;
+  public get producedAnswer(): boolean {
+    return this.#sawAnswer;
   }
 
-  /**
-   * Feeds a chunk and returns the narration it released.
-   *
-   * Returns an empty string while text is still ambiguous, which is what keeps
-   * a half-arrived `<th` from ever reaching the screen.
-   */
-  public push(chunk: string): string {
-    if (chunk === '') return '';
+  public get insideReasoning(): boolean {
+    return this.#inside;
+  }
+
+  public get sawBareCloser(): boolean {
+    return this.#sawBareCloser;
+  }
+
+  public push(chunk: string): Delta[] {
+    if (chunk === '') return [];
     this.#held += chunk;
     return this.#drain(false);
   }
 
   /**
-   * Ends the stream and returns whatever narration remains safe to show.
+   * Ends the stream.
    *
-   * A stream that ends inside a reasoning block yields nothing: there was no
-   * answer, and showing the fragment would present an incomplete generation as
+   * A stream that ended inside reasoning yields no answer at all: there was
+   * none, and releasing the fragment would present an incomplete generation as
    * a reply.
    */
-  public finish(): string {
+  public finish(): Delta[] {
     return this.#drain(true);
   }
 
-  /** Whether any real answer content was ever produced. */
-  public get producedAnswer(): boolean {
-    return this.#sawAnswer;
-  }
-  #sawAnswer = false;
+  #drain(final: boolean): Delta[] {
+    const deltas: Delta[] = [];
+    let out = '';
 
-  #drain(final: boolean): string {
-    let narration = '';
     let index = 0;
-
+    // Every branch either advances `index`, consumes held text, or breaks, so
+    // this cannot loop forever.
     while (index < this.#held.length) {
       if (this.#inside) {
-        const close = findTag(CLOSE_TAG_PATTERN, this.#held, index);
-        if (close === null) {
-          // Everything left is reasoning, except a trailing partial closer that
-          // a later chunk may still complete. Consuming that tail as reasoning
-          // would swallow the closer and leak the answer that follows it.
-          const tail = final ? 0 : partialTagLength(this.#held.slice(index));
-          const reasoning = this.#held.slice(index, this.#held.length - tail);
-          this.#reasoning += reasoning;
-          this.#held = this.#held.slice(this.#held.length - tail);
-          index = this.#held.length;
+        const verdict = classifyTagAt(this.#held, index);
+        if (verdict.kind === 'invalid') {
+          // Reasoning text that merely looks like a tag: claim it now, so it
+          // cannot be dropped when the buffer is trimmed.
+          this.#reasoning += this.#held[index] ?? '';
+          index += 1;
           continue;
         }
-        this.#reasoning += this.#held.slice(index, close.index);
-        this.#held = this.#held.slice(close.index + close.length);
+        if (verdict.kind === 'partial') {
+          // The remaining tail is still a possible tag, so it is held rather
+          // than claimed.
+          if (!final) break;
+          this.#reasoning += this.#held;
+          this.#held = '';
+          index = 0;
+          continue;
+        }
+        if (!verdict.close) {
+          // Nested openers are not a shape real reasoners emit; treat as text.
+          index += 1;
+          continue;
+        }
+        // Everything before the closer has already been claimed above.
+        this.#held = this.#held.slice(index + verdict.length);
+        // In reasoner mode the opening state is assumed, so the first closer is
+        // a bare closer: no opener was ever seen.
+        if (!this.#sawOpener) this.#sawBareCloser = true;
         this.#inside = false;
         index = 0;
         continue;
       }
 
-      const open = findTag(OPEN_TAG_PATTERN, this.#held, index) ?? NO_TAG;
-      const close = findTag(CLOSE_TAG_PATTERN, this.#held, index) ?? NO_TAG;
-      const nextOpen = open.index;
-      const nextClose = close.index;
-
-      if (nextOpen === Infinity && nextClose === Infinity) {
-        // Hold the opening of the response: a bare closer may still arrive and
-        // turn everything released so far into reasoning.
-        if (
-          !final &&
-          !this.#released &&
-          this.#held.length <= LEADING_HOLD_CHARS &&
-          !looksLikeProse(this.#held)
-        ) {
+      // Outside reasoning: a fenced block makes any tag inside it literal.
+      if (this.#held.startsWith(FENCE, index)) {
+        const end = this.#held.indexOf(FENCE, index + FENCE.length);
+        if (end === -1) {
+          out += this.#held.slice(index);
+          index = this.#held.length;
           break;
         }
-        if (!this.#released) {
-          // Past the bound: this is ordinary narration, so release it and stop
-          // treating later text as retractable.
-          this.#released = true;
-          narration += this.#held;
-          if (this.#held.trim() !== '') this.#sawAnswer = true;
-          this.#held = '';
-          index = 0;
-          continue;
-        }
-        const tail = final ? 0 : partialTagLength(this.#held.slice(index));
-        const emit = this.#held.slice(index, this.#held.length - tail);
-        this.#held = this.#held.slice(this.#held.length - tail);
-        narration += emit;
-        if (emit.trim() !== '') this.#sawAnswer = true;
-        this.#released = true;
-        index = this.#held.length;
+        out += this.#held.slice(index, end + FENCE.length);
+        index = end + FENCE.length;
         continue;
       }
 
-      if (nextClose < nextOpen) {
-        // A bare closer with no opener: everything before it was reasoning.
-        // Text already released by an earlier delta cannot be retracted, so it
-        // stays narration; whatever is still buffered is captured here rather
-        // than dropped, or the answer between two stray closers would vanish
-        // from both narration and reasoning.
-        this.#reasoning += this.#held.slice(index, close.index);
-        this.#held = this.#held.slice(close.index + close.length);
+      const verdict = classifyTagAt(this.#held, index);
+      if (verdict.kind === 'invalid') {
+        out += this.#held[index] ?? '';
+        index += 1;
+        continue;
+      }
+      if (verdict.kind === 'partial') {
+        // Chars before this point were already emitted individually. Trim the
+        // buffer so the next chunk cannot re-emit them.
+        this.#held = this.#held.slice(index);
+        index = 0;
+        if (!final) break;
+        out += this.#held;
+        this.#held = '';
+        continue;
+      }
+      if (verdict.close) {
+        // A closer with no opener: everything before it was reasoning.
         this.#sawBareCloser = true;
         this.#sawAnswer = false;
-        index = 0;
-        continue;
+      } else {
+        this.#inside = true;
+        this.#sawOpener = true;
       }
-
-      // An opening tag: text before it is the answer so far.
-      const before = this.#held.slice(index, open.index);
-      narration += before;
-      if (before.trim() !== '') this.#sawAnswer = true;
-      this.#released = true;
-      this.#held = this.#held.slice(open.index + open.length);
-      this.#inside = true;
+      this.#held = this.#held.slice(index + verdict.length);
       index = 0;
     }
 
-    return narration;
+    // Everything scanned past has been emitted; drop it from the buffer so the
+    // next chunk cannot re-emit it.
+    this.#held = this.#held.slice(index);
+
+    if (final && !this.#inside) {
+      // Anything left over at end of stream is ordinary answer text.
+      out += this.#held;
+      this.#held = '';
+    }
+    if (out !== '') {
+      if (out.trim() !== '') this.#sawAnswer = true;
+      deltas.push({ lane: 'text', text: out });
+    }
+    return deltas;
   }
 }
 
-/** One-shot split for a complete, non-streamed response. */
-export function splitReasoning(text: string): ReasoningSplit {
-  const filter = new ReasoningFilter();
-  const narration = filter.push(text) + filter.finish();
+export interface ReasoningSplit {
+  readonly narration: string;
+  readonly reasoning: string;
+  readonly insideReasoning: boolean;
+  readonly sawBareCloser: boolean;
+}
+
+export function splitReasoning(
+  text: string,
+  options: FilterOptions = {},
+): ReasoningSplit {
+  const filter = new ReasoningFilter(options);
+  let narration = '';
+  for (const delta of [...filter.push(text), ...filter.finish()]) {
+    if (delta.lane === 'text') narration += delta.text;
+  }
   return {
     narration,
     reasoning: filter.reasoning,

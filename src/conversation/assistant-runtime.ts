@@ -26,6 +26,7 @@ import { PermissionGrantStore } from '../permissions/grant-store.js';
 import { RiskClassifier } from '../permissions/risk-classifier.js';
 import { ConfirmationFlow } from '../permissions/confirmation-flow.js';
 import { hardFloorVerdict, readAutonomySync } from '../permissions/autonomy.js';
+import { modelExpectsInlineReasoning } from '../providers/model-registry.js';
 import type { TextConfirmationResult } from '../permissions/confirmation-flow.js';
 import { createProvider } from '../providers/provider-factory.js';
 import type { LLMProvider, ToolCall } from '../providers/provider.interface.js';
@@ -337,6 +338,13 @@ export async function createAssistantRuntime(
       },
     };
 
+    // Resolved once: whether this model inlines reasoning decides if the
+    // filter has to hold a response's opening.
+    const expectsInlineReasoning = await modelExpectsInlineReasoning(
+      assistantConfig.homeDirectory,
+      config.model,
+    );
+
     const factExtractor = new FactExtractor({
       provider,
       factsRepository: facts,
@@ -359,6 +367,7 @@ export async function createAssistantRuntime(
       toolExecutor: observedExecutor,
       tools: [shellTool.definition],
       buildSystemPrompt: () => '',
+      expectsInlineReasoning,
       ...(config.maxTokens === undefined
         ? {}
         : { maxTokens: config.maxTokens }),

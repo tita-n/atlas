@@ -159,6 +159,13 @@ export interface CreateSessionOptions {
   readonly buildSystemPrompt: () => string;
   /** Generation limits, previously accepted by config init but silently dropped. */
   readonly maxTokens?: number | undefined;
+  /**
+   * Whether the active model is known to emit reasoning inline.
+   *
+   * Resolved once at startup from the models.dev registry. Only such a model
+   * pays the cost of holding a response's opening.
+   */
+  readonly expectsInlineReasoning?: boolean | undefined;
   readonly temperature?: number | undefined;
   /** Runs after every completed turn to persist facts and corrections. */
   readonly onTurnComplete?:
@@ -249,6 +256,11 @@ export class AssistantSession {
   /** The model currently in use. */
   public get model(): string {
     return this.#options.conversation.model;
+  }
+
+  /** Whether the active model is known to emit reasoning inline. */
+  get modelExpectsReasoning(): boolean {
+    return this.#options.conversation.modelExpectsReasoning;
   }
 
   /** Loads the editable personality block, writing a default on first run. */
@@ -427,7 +439,9 @@ export class AssistantSession {
     const raw = response.content ?? '';
     // Reasoning is separated here too, so a non-streamed thinking model gets
     // the same treatment as a streamed one.
-    const split = splitReasoning(raw);
+    const split = splitReasoning(raw, {
+      expectsInlineReasoning: this.modelExpectsReasoning,
+    });
     let narration = stripExecutionLeakage(split.narration);
     if (split.narration.trim() === '' && split.reasoning.trim() !== '') {
       throw new ProviderResponseError(
