@@ -10,18 +10,18 @@ harnesses converged on (vLLM/SGLang, OpenClaw, Hermes, OpenCode, qwen-code).
 
 ## Why (the evidence)
 
-- **qwen-code**: *"its 128-char candidate cap released confirmed opening tag"*
+- **qwen-code**: _"its 128-char candidate cap released confirmed opening tag"_
   and let real unclosed leaks through. The currently-committed
   `LEADING_HOLD_CHARS = 128` is exactly that defect. No cap value is safe.
-- **vLLM `Olmo3ReasoningBuffer`**: *starts in the reasoning state* so a bare
+- **vLLM `Olmo3ReasoningBuffer`**: _starts in the reasoning state_ so a bare
   `</think>` with no opener is caught. No cap needed — the wait ends at the
   closer, not at a length threshold.
-- **OpenClaw**: tag *family* (`think, thinking, thought, reasoning, internal,
-  antthinking`, plus `mm:`/`antml:` prefixed), whitespace/namespace/casing
+- **OpenClaw**: tag _family_ (`think, thinking, thought, reasoning, internal,
+antthinking`, plus `mm:`/`antml:` prefixed), whitespace/namespace/casing
   tolerance, `isInsideCode` so tags in fenced code are literal, and a
   three-state tag classifier: `partial` (hold) / `invalid` (release) /
   confirmed. Typed lanes: `{kind:"text"} | {kind:"thinking"}`.
-- **Hermes**: stateful cross-chunk buffer that *collects* stripped reasoning
+- **Hermes**: stateful cross-chunk buffer that _collects_ stripped reasoning
   rather than discarding it.
 - **OpenCode**: reasoning as a typed event with a show/hide toggle; no text
   heuristics in the view layer.
@@ -32,7 +32,10 @@ harnesses converged on (vLLM/SGLang, OpenClaw, Hermes, OpenCode, qwen-code).
 
 ```ts
 type Lane = 'text' | 'reasoning';
-interface Delta { lane: Lane; text: string }
+interface Delta {
+  lane: Lane;
+  text: string;
+}
 
 class ReasoningFilter {
   constructor(options?: { expectsInlineReasoning?: boolean });
@@ -76,7 +79,17 @@ function splitReasoning(text: string, options?): ReasoningSplit;
   in place while new imports are added. Always assert the match applied.
 - A broken intermediate build left in the tree is worse than no change.
 
-## Current committed state
+## Outcome
 
-`c866fa7` — green, 915 tests. Contains the capped filter, which the research
-says is defective. This rewrite replaces it.
+Landed in `f206cc0` (rewrite) and `2a13ccc` (review fixes). The capped filter
+is gone: the filter now uses typed lanes, a tag family, three-state tag
+classification, fence state, and no character caps. The cap was replaced by an
+`expectsInlineReasoning` boolean resolved once at startup from the models.dev
+cache - cache only, so starting Atlas never depends on reaching models.dev.
+
+Known and accepted: an unterminated tag-shaped tail holds ordinary prose until a
+delimiter arrives. That is the price of catching a tag opener split across chunks
+without a cap. Content is never lost and the whole-string result matches.
+
+This document is kept only as a record of the design decisions and the traps
+hit during the migration.

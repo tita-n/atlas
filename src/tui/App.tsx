@@ -195,6 +195,8 @@ export function AtlasApp({
   const [busy, setBusy] = useState(false);
   const [pendingTurn, setPendingTurn] = useState<TurnView | null>(null);
   const [liveNotice, setLiveNotice] = useState('');
+  // Off by default: reasoning is available, never in the way.
+  const [showReasoning, setShowReasoning] = useState(false);
   const [modal, setModal] = useState<ModalKind>('none');
   const [gate, setGate] = useState<PendingGate | null>(null);
   const [statusDetail, setStatusDetail] = useState<string | undefined>(
@@ -492,6 +494,11 @@ export function AtlasApp({
       }
 
       if (line === '') return;
+      if (line.trim() === '/reasoning') {
+        setShowReasoning((previous) => !previous);
+        setLiveNotice('');
+        return;
+      }
 
       const command = runAssistantCommand(line, {
         facts: runtime.facts,
@@ -802,6 +809,7 @@ export function AtlasApp({
               turn={item}
               palette={palette}
               color={color}
+              showReasoning={showReasoning}
               toolViews={(item.toolCalls ?? []).map((call, index) => ({
                 id: `${item.id}-tool-${index}`,
                 name: call.name,

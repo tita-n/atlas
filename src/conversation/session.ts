@@ -80,6 +80,13 @@ export interface TurnResult {
    * a provider omits it.
    */
   readonly usage?: { inputTokens: number; outputTokens: number } | undefined;
+  /**
+   * Reasoning the model produced, when it reported any.
+   *
+   * Never merged into narration. Present so the user can inspect it on request
+   * rather than having it thrown away or shown by accident.
+   */
+  readonly reasoning?: string | undefined;
   /** Tool calls executed during this turn, in order. */
   readonly toolCalls?: readonly TurnToolCall[] | undefined;
 }
@@ -477,6 +484,9 @@ export class AssistantSession {
           }),
       // Projected into the shape a front-end needs to render a tool block,
       // rather than exposing the ledger's internal record type.
+      ...(response.reasoning === undefined || response.reasoning === ''
+        ? {}
+        : { reasoning: response.reasoning }),
       toolCalls: this.ledger.records.map((record) => ({
         name: record.toolName,
         command: record.command,

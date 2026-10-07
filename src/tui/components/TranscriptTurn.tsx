@@ -23,6 +23,8 @@ export interface TurnView {
   readonly detail: string;
   /** True until the turn finishes, which dims the narration slightly. */
   readonly pending: boolean;
+  /** Reasoning for this turn, shown only when the user asks for it. */
+  readonly reasoning?: string | undefined;
   /** Tool calls executed during the turn, for their own blocks. */
   readonly toolCalls?: readonly TurnToolCall[] | undefined;
 }
@@ -37,6 +39,8 @@ export interface TranscriptTurnProps {
   readonly expandedIds: ReadonlySet<string>;
   /** The tool block currently accepting a keypress; only it is interactive. */
   readonly focusedTool: string | null;
+  /** Whether the user has asked to see model reasoning. */
+  readonly showReasoning?: boolean;
   readonly onToggleTool: (toolId: string) => void;
   /**
    * Hides the user's line. Used for the in-flight turn in the live region:
@@ -55,6 +59,7 @@ export function TranscriptTurn({
   focusedTool,
   onToggleTool,
   hideUser = false,
+  showReasoning = false,
 }: TranscriptTurnProps): React.JSX.Element {
   return (
     <Box key={turn.id} flexDirection="column" marginBottom={1}>
@@ -77,6 +82,27 @@ export function TranscriptTurn({
             {turn.narration}
             {turn.pending ? '▌' : ''}
           </Text>
+        </Box>
+      ) : null}
+
+      {showReasoning &&
+      turn.reasoning !== undefined &&
+      turn.reasoning !== '' ? (
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          borderStyle="round"
+          {...(color ? { borderColor: palette.inkFaint } : {})}
+          paddingX={1}
+        >
+          <Text {...tint(color ? palette.inkFaint : undefined)}>
+            model reasoning
+          </Text>
+          {turn.reasoning.split('\n').map((line, index) => (
+            <Text key={index} {...tint(color ? palette.inkDim : undefined)}>
+              {line}
+            </Text>
+          ))}
         </Box>
       ) : null}
 

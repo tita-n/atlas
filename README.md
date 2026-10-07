@@ -1,22 +1,20 @@
 # Atlas
 
-Atlas is a small, provider-agnostic command-line AI assistant harness. It is a harness rather than a model: it presents one library interface over OpenAI-compatible and Anthropic-compatible chat APIs, while keeping provider-specific request and response formats inside their adapters.
+A model-agnostic AI assistant that runs on your machine, under your account,
+with a permission gate and an audit trail in front of everything it can do.
 
-Phase 2 provides:
+Atlas is a harness, not a model. It works with any OpenAI-compatible or
+Anthropic-compatible endpoint, and swapping models does not change who Atlas is,
+what it remembers, or what it is willing to do without asking.
 
-- An interactive multi-turn `atlas chat` REPL.
-- Structured tool calling for shell requests, with no prose-to-command guessing.
-- OpenAI Chat Completions support for OpenAI, Ollama, LM Studio, vLLM, and other compatible endpoints.
-- Anthropic Messages support for Anthropic and compatible endpoints.
-- JSON configuration at `~/.atlas/config.json`.
-- Persistent SQLite memory and shell audit history at `~/.atlas/atlas.db`.
-- A persistent bash session for the lifetime of one Atlas process.
-- Hard-deny, confirmation, informational, and Tier 0 command policies.
-- Explicit `atlas permissions setup` for the narrow passwordless dnf allowlist.
-- Automatic conversation resume and durable fact extraction.
-- Environment and CLI overrides with the precedence `CLI > environment > file`.
-- A publishable npm package with a library entry point and `atlas` binary.
-- Unit and integration tests that never call a real provider.
+```sh
+atlas                     # interactive terminal interface
+atlas chat                # plain-text front end
+atlas autonomy            # how often Atlas asks before acting
+atlas audit               # what it has done
+```
+
+See [What Atlas can do](#what-atlas-can-do) for the full capability map.
 
 ## Requirements
 
@@ -598,6 +596,60 @@ streaming; see `docs/tui-design.md` section 3 for why, and for the narrow
 | <kbd>Ctrl</kbd>+<kbd>D</kbd> | Leave                                 |
 | <kbd>Esc</kbd>               | Leave                                 |
 
-## Scope
+## What Atlas can do
 
-Phases 2 through 4 do not include conversation compaction, browser automation, text-to-speech output, skills, coding-agent orchestration, self-modification, or the browser orb UI. The terminal interface is a rendering layer over the assistant session, not the orb. Those can be layered on the provider, persistence, conversation, and shell interfaces in later phases.
+A model-agnostic assistant that runs on your machine under your account. The
+model is a detail: the identity, memory, permissions, and safety behaviour are
+the harness's, and do not change when you switch provider.
+
+### Conversation and memory
+
+- One persistent conversation that resumes across restarts.
+- Durable facts and standing corrections, retrieved per turn by relevance rather
+  than dumped in whole.
+- An editable personality at `~/.atlas/personality.md`.
+- Completion claims are checked against what actually happened before you are
+  told a task is finished. An unsupported "done" is annotated, not passed on.
+
+### Acting on your machine
+
+- A shell tool behind a permission gate that classifies commands structurally,
+  not by pattern alone.
+- Autonomy levels decide how often that gate asks. The default asks about
+  everything; lowering it takes deliberate friction and persists until changed.
+- A hard floor that no setting can switch off: unrecoverable actions and edits
+  to Atlas's own safety configuration always stop for you.
+- Dry-run preview for any command, using a tool's native preview flag where one
+  exists and running nothing where none does.
+
+### Transparency
+
+- An append-only audit log of every command, approval, denial, and preview,
+  tagged with the gate path and autonomy level in force.
+- Per-change version snapshots for self-modification, with automatic rollback
+  if a change leaves Atlas unable to start.
+- Model reasoning is captured but never shown unless you ask for it with
+  `/reasoning`.
+
+### Terminal interface
+
+`atlas` opens a graphical interface in an interactive terminal and falls back to
+plain text otherwise, so pipes and CI are unaffected. See
+[The terminal interface](#the-terminal-interface).
+
+### Provider and model metadata
+
+Model names, context windows, and pricing come from
+[models.dev](https://models.dev), fetched on demand and cached on disk, so a new
+model needs no code change. Tag stripping for reasoning models runs for every
+model regardless, because the dataset is community-maintained and has gaps.
+
+## Boundaries
+
+Deliberately not here: conversation compaction, browser automation,
+text-to-speech, skills, a workflow-optimisation framework, and the browser orb
+interface. The terminal interface is a rendering layer, not the orb.
+
+Not attempted: preventing a determined attempt to extract the underlying model
+name through adversarial prompting. Identity anchoring shapes how Atlas presents
+itself in conversation; it is not a security boundary.

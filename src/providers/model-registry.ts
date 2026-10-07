@@ -403,6 +403,23 @@ export function formatPrice(
 }
 
 /**
+ * Parses the on-disk cache without touching the network.
+ *
+ * Returns undefined when there is no usable cache, which callers treat as "not
+ * known" rather than as a reason to go looking.
+ */
+async function readCacheOnly(
+  atlasHome: string,
+): Promise<{ providers: ProviderInfo[]; fetchedAt: number } | undefined> {
+  const cached = await readCache(cachePath(atlasHome));
+  if (cached === undefined) return undefined;
+  return {
+    providers: parseRegistry(cached.payload),
+    fetchedAt: cached.fetchedAt,
+  };
+}
+
+/**
  * Whether a model is known to emit reasoning inline.
  *
  * Read from the cached registry, so it never blocks on the network. This is a
@@ -413,7 +430,16 @@ export async function modelExpectsInlineReasoning(
   atlasHome: string,
   model: string,
 ): Promise<boolean> {
-  const { snapshot } = await loadRegistry({ atlasHome });
+  // Cache only. This is consulted on every startup to decide whether the
+  // reasoning filter has to hold a response's opening, so it must never make
+  // starting Atlas depend on reaching models.dev.
+  const cached = await readCacheOnly(atlasHome);
+  if (cached === undefined) return false;
+  const snapshot: RegistrySnapshot = {
+    providers: cached.providers,
+    fetchedAt: cached.fetchedAt,
+    source: 'cache',
+  };
   for (const provider of snapshot.providers) {
     const found = provider.models.find(
       (entry) => entry.id === model || entry.name === model,

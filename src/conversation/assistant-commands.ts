@@ -55,6 +55,12 @@ export const ASSISTANT_COMMAND_REGISTRY: readonly AssistantCommandSpec[] = [
     opensModal: false,
   },
   {
+    name: 'reasoning',
+    summary: 'Show or hide the model\u2019s own reasoning',
+    takesArgument: false,
+    opensModal: false,
+  },
+  {
     name: 'model',
     summary: 'Switch the active model',
     takesArgument: false,
