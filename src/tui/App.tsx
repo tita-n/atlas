@@ -412,6 +412,9 @@ export function AtlasApp({
       let detailText: string;
       let usage: { inputTokens: number; outputTokens: number } | undefined;
       let calls: readonly TurnToolCall[] = [];
+      // Reasoning is only known once the turn finishes, so the live turn never
+      // has any; the committed turn below is the only place it can appear.
+      let reasoning: string | undefined;
       try {
         const result = await runtime.session.handleInputStreaming(
           message,
@@ -438,11 +441,13 @@ export function AtlasApp({
         detailText = result.detail;
         usage = result.usage;
         calls = result.toolCalls ?? [];
+        reasoning = result.reasoning;
       } catch (error) {
         narration = `Something went wrong: ${
           error instanceof Error ? error.message : String(error)
         }`;
         detailText = '';
+        reasoning = undefined;
       }
 
       // The turn is complete before reveal begins: the live region must not
@@ -456,6 +461,9 @@ export function AtlasApp({
           narration,
           detail: detailText,
           pending: false,
+          // Carried on the turn, never merged into the narration. TranscriptTurn
+          // renders it only when /reasoning is on.
+          ...(reasoning === undefined || reasoning === '' ? {} : { reasoning }),
           toolCalls: calls,
         },
       ]);
@@ -495,8 +503,16 @@ export function AtlasApp({
 
       if (line === '') return;
       if (line.trim() === '/reasoning') {
-        setShowReasoning((previous) => !previous);
-        setLiveNotice('');
+        // Committed turns live in Ink's <Static> and are never re-rendered, so
+        // the toggle reads from the next turn onward. Saying so is the only
+        // feedback the user gets, since nothing about the screen changes.
+        const next = !showReasoning;
+        setShowReasoning(next);
+        setLiveNotice(
+          next
+            ? 'model reasoning shown from the next turn on'
+            : 'model reasoning hidden from the next turn on',
+        );
         return;
       }
 
@@ -524,7 +540,7 @@ export function AtlasApp({
         void runTurn(command.message);
       }
     },
-    [exit, runtime, runTurn, busy],
+    [exit, runtime, runTurn, busy, showReasoning],
   );
 
   const closeGate = useCallback((decision: GateDecision): void => {

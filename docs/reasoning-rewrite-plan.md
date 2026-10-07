@@ -61,7 +61,10 @@ function splitReasoning(text: string, options?): ReasoningSplit;
 3. Replace the cap with a boolean. Config field `reasoningHoldChars: number`
    becomes `expectsInlineReasoning: boolean`, resolved once at startup in
    `assistant-runtime.ts` from the models.dev registry
-   (`loadRegistry` -> `provider.models.find(...)` -> `reasoning === true`).
+   (`modelExpectsInlineReasoning` -> `provider.models.find(...)` ->
+   `reasoning === true`). That lookup is cache-only and resolves to `false` when
+   there is no cache, so it never calls `loadRegistry` and startup never
+   depends on reaching models.dev.
    Pass through `ConversationOptions` and to the filter.
 4. Migrate `tests/reasoning/reasoning-filter.test.ts` deliberately:
    - bare-closer cases move to `expectsInlineReasoning: true`
@@ -93,3 +96,11 @@ without a cap. Content is never lost and the whole-string result matches.
 
 This document is kept only as a record of the design decisions and the traps
 hit during the migration.
+
+## Not part of the filter: showing it
+
+The toggle that shows captured reasoning is a front-end concern, deliberately
+kept out of `reasoning-filter.ts`. `TurnResult.reasoning` carries the text and
+`TranscriptTurn` renders it only when `/reasoning` is on, which is off by
+default. The filter's job ends at separating the lanes; deciding what a human
+sees belongs to the view.
