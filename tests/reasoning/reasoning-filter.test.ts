@@ -197,6 +197,29 @@ describe('answer-less generations', () => {
     filter.finish();
     expect(filter.producedAnswer).toBe(false);
   });
+
+  it('reports an answer when real content follows a bare closer', () => {
+    const filter = new ReasoningFilter({ expectsInlineReasoning: true });
+    filter.push('only reasoning</think>');
+    filter.push('Then the answer is 7.');
+    filter.finish();
+    expect(filter.producedAnswer).toBe(true);
+    expect(filter.reasoning).toBe('only reasoning');
+  });
+
+  it('reports an answer for ordinary prose with no tags at all', () => {
+    const filter = new ReasoningFilter();
+    filter.push('Plain answer.');
+    filter.finish();
+    expect(filter.producedAnswer).toBe(true);
+  });
+
+  it('reports no answer for an empty stream', () => {
+    const filter = new ReasoningFilter();
+    expect(filter.push('')).toEqual([]);
+    expect(filter.finish()).toEqual([]);
+    expect(filter.producedAnswer).toBe(false);
+  });
 });
 
 describe('reasoning is captured, not discarded', () => {
@@ -218,7 +241,259 @@ describe('reasoning is captured, not discarded', () => {
   });
 });
 
+describe('leaks: reasoning never reaches narration', () => {
+  it('keeps reasoning inside a nested block', () => {
+    // The inner closer must not end the outer block, or everything after it -
+    // still reasoning - would land on the answer lane.
+    const r = splitReasoning(
+      '<think>outer <think>inner</think> still reasoning</think>Answer',
+    );
+    expect(r.narration).toBe('Answer');
+    expect(r.reasoning).toBe('outer inner still reasoning');
+  });
+
+  it('survives an opener with two closers', () => {
+    const r = splitReasoning('<think>r</think></think>Answer');
+    expect(r.narration).toBe('Answer');
+    expect(r.reasoning).toBe('r');
+  });
+
+  it('does not release a bare closer that ends the response', () => {
+    const r = splitReasoning('only reasoning</think>', {
+      expectsInlineReasoning: true,
+    });
+    expect(r.narration).toBe('');
+    expect(r.reasoning).toBe('only reasoning');
+  });
+
+  it('swallows a bare closer in the middle of an answer', () => {
+    expect(splitReasoning('I think</think> the rest').narration).toBe(
+      'I think the rest',
+    );
+  });
+
+  it('does not release reasoning that follows a nested closer', () => {
+    const got = streamed('<think>a<think>b</think>c</think>D', 1);
+    expect(got.narration).toBe('D');
+    expect(got.reasoning).toBe('abc');
+  });
+
+  it('strips a tag that starts mid-word', () => {
+    const r = splitReasoning('skip<thinking>ok');
+    expect(r.narration).toBe('skip');
+    expect(r.reasoning).toBe('ok');
+  });
+
+  it('strips every tag spelling, whole or chunked', () => {
+    const inputs = [
+      '<THINK>secret</THINK>Answer',
+      '< think >secret< / think >Answer',
+      'Answer',
+      '<antml:thought>secret</antml:thought>Answer',
+      '<think> a="1" >secret</think>Answer',
+      '<REASONING>secret</REASONING>Answer',
+    ];
+    for (const input of inputs) {
+      expect(splitReasoning(input).narration, input).toBe('Answer');
+      expect(streamed(input, 1).narration, input).toBe('Answer');
+      expect(streamed(input, input.length).narration, input).toBe('Answer');
+    }
+  });
+
+  it('releases no reasoning at any split offset', () => {
+    const input = '<think>reasoning here</think>Visible answer.';
+    for (let cut = 1; cut < input.length; cut += 1) {
+      const filter = new ReasoningFilter();
+      const narration =
+        text(filter.push(input.slice(0, cut))) +
+        text(filter.push(input.slice(cut))) +
+        text(filter.finish());
+      expect(narration, `cut ${cut}`).toBe('Visible answer.');
+      expect(filter.reasoning, `cut ${cut}`).toBe('reasoning here');
+    }
+  });
+
+  it('yields no answer when the whole response is reasoning', () => {
+    for (const input of [
+      '<think>the user asked about a thing and then',
+      '<think>a</think><think>b</think>',
+    ]) {
+      const r = splitReasoning(input);
+      expect(r.narration, input).toBe('');
+      expect(r.reasoning, input).not.toBe('');
+    }
+  });
+});
+
+describe('over-stripping: ordinary text survives intact', () => {
+  it('keeps prose that only mentions thinking', () => {
+    const input =
+      'I think we should use the internal table and rethink the approach.';
+    expect(splitReasoning(input).narration).toBe(input);
+    expect(streamed(input, 1).narration).toBe(input);
+  });
+
+  it('keeps JSON, including reasoning-ish keys', () => {
+    const input = '{"think": true, "reasoning": "x", "value": 1}';
+    expect(splitReasoning(input).narration).toBe(input);
+    expect(streamed(input, 1).narration).toBe(input);
+  });
+
+  it('keeps HTML, including names that merely start like a tag name', () => {
+    const inputs = [
+      '<div class="internal">hi</div>',
+      '<internal-link>docs</internal-link>',
+      'The <thinker> element. Done.',
+      '<p>Use &lt;think&gt; to reason.</p>',
+    ];
+    for (const input of inputs) {
+      expect(splitReasoning(input).narration, input).toBe(input);
+      expect(streamed(input, 1).narration, input).toBe(input);
+    }
+  });
+
+  it('keeps a fenced block literal at every chunk size', () => {
+    const input = 'Example:\n```html\n<think>literal</think>\n```\nDone.';
+    expect(splitReasoning(input).narration).toBe(input);
+    for (let size = 1; size <= input.length; size += 1) {
+      expect(streamed(input, size).narration, `size ${size}`).toBe(input);
+    }
+  });
+
+  it('keeps a longer fence literal, opener and closer included', () => {
+    const input = '````\n<think>literal</think>\n````\nDone.';
+    expect(splitReasoning(input).narration).toBe(input);
+    for (let size = 1; size <= input.length; size += 1) {
+      expect(streamed(input, size).narration, `size ${size}`).toBe(input);
+    }
+  });
+
+  it('keeps an unterminated fence literal to the end of the stream', () => {
+    const input = '```\n<think>literal</think>\nno closer here';
+    expect(splitReasoning(input).narration).toBe(input);
+    for (let size = 1; size <= input.length; size += 1) {
+      expect(streamed(input, size).narration, `size ${size}`).toBe(input);
+    }
+  });
+
+  it('keeps a fence that closes in a later chunk literal', () => {
+    // The opener arrives before its closer exists, so the fence has to be state
+    // rather than a scan of the current buffer.
+    const filter = new ReasoningFilter();
+    expect(text(filter.push('```\n<think>code sample'))).toBe(
+      '```\n<think>code sample',
+    );
+    // The fence closes, so the tags after it are live again and are stripped.
+    expect(text(filter.push('\n```\n<think>Answer'))).toBe('\n```\n');
+    expect(filter.reasoning).toBe('Answer');
+    expect(text(filter.finish())).toBe('');
+  });
+
+  it('keeps inline backticks as text', () => {
+    const input = 'Use `code` and a `` pair inline.';
+    expect(splitReasoning(input).narration).toBe(input);
+    expect(streamed(input, 1).narration).toBe(input);
+  });
+
+  it('keeps comparisons and stray angle brackets', () => {
+    for (const input of ['a < b', '5 < 6 and 7 > 6', 'x <', '<>']) {
+      expect(splitReasoning(input).narration, input).toBe(input);
+      expect(streamed(input, 1).narration, input).toBe(input);
+    }
+  });
+});
+
+describe('transport invariance', () => {
+  const shapes: readonly {
+    readonly name: string;
+    readonly input: string;
+    readonly options: { readonly expectsInlineReasoning?: boolean };
+  }[] = [
+    {
+      name: 'complete block',
+      input: '<think>why not</think>Because.',
+      options: {},
+    },
+    {
+      name: 'bare closer',
+      input: 'Let me see the file first.</think>Because.',
+      options: { expectsInlineReasoning: true },
+    },
+    {
+      name: 'unterminated block',
+      input: '<think>why not</think>',
+      options: {},
+    },
+    {
+      name: 'prose, tags and a fence together',
+      input: 'a < b\n```\n<think>x</think>\n```\n<think>r</think>done',
+      options: {},
+    },
+  ];
+
+  for (const shape of shapes) {
+    it(`agrees with the whole-string call at every size of a ${shape.name}`, () => {
+      const baseline = splitReasoning(shape.input, shape.options);
+      for (let size = 1; size <= shape.input.length; size += 1) {
+        const got = streamed(shape.input, size, shape.options);
+        expect(got.narration, `size ${size}`).toBe(baseline.narration);
+        expect(got.reasoning, `size ${size}`).toBe(baseline.reasoning);
+      }
+    });
+  }
+});
+
+describe('loop safety', () => {
+  const adversarial: readonly string[] = [
+    '',
+    '<',
+    '</',
+    '<mm:',
+    '<antml:',
+    '<think>'.repeat(500),
+    '<'.repeat(5000),
+    '</'.repeat(5000),
+    '`'.repeat(5000),
+    '<think>' + '<'.repeat(2000),
+    '<think>' + '```\n' + 'no closer '.repeat(200),
+    'plain text '.repeat(500),
+  ];
+
+  it('terminates and agrees with the whole-string call', () => {
+    for (const input of adversarial) {
+      const baseline = splitReasoning(input);
+      for (const size of [1, 3, 1024]) {
+        const got = streamed(input, size);
+        expect(got.narration, `len ${input.length} size ${size}`).toBe(
+          baseline.narration,
+        );
+        expect(got.reasoning, `len ${input.length} size ${size}`).toBe(
+          baseline.reasoning,
+        );
+      }
+    }
+  });
+
+  it('never leaks reasoning behind a long run of angle brackets', () => {
+    const input = '<'.repeat(50) + '<think>secret</think>visible';
+    for (let size = 1; size <= 12; size += 1) {
+      const got = streamed(input, size);
+      expect(got.narration, `size ${size}`).not.toContain('secret');
+      expect(got.reasoning, `size ${size}`).toBe('secret');
+    }
+  });
+});
+
 describe('instance independence', () => {
+  it('does not carry state from one response into the next', () => {
+    const shared = new ReasoningFilter();
+    const run = (input: string): string =>
+      text([...shared.push(input), ...shared.finish()]);
+    expect(run('<think>first</think>One.')).toBe('One.');
+    expect(run('<think>second</think>Two.')).toBe('Two.');
+    expect(shared.reasoning).toBe('firstsecond');
+  });
+
   it('keeps two filters independent', () => {
     const first = new ReasoningFilter();
     first.push('<think>first trace that never ends');
