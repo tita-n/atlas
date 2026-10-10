@@ -1,0 +1,7 @@
+dist
+node_modules
+coverage
+package-lock.json
+
+# Python bridge source is not formatted by prettier
+voice-bridge/
