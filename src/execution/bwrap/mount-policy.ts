@@ -27,6 +27,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
+  contains,
   protectedTargets,
   protectedGitTargets,
 } from '../../safety/protected-targets.js';
@@ -87,15 +88,34 @@ export interface MountPolicy {
   /** Directories that may be written. */
   readonly writableRoots: readonly string[];
   readonly networkEnabled: boolean;
-  /** Atlas state directory; never visible. */
+  /**
+   * Atlas state directory; never visible.
+   *
+   * Enforced by the mask pass in {@link buildBwrapCommand}, which is what makes
+   * this field's promise true even when the cwd read-only bind covers it.
+   */
   readonly atlasHome: string;
-  /** Extra paths to hide, in addition to the ones Atlas always hides. */
+  /**
+   * Extra paths to hide, in addition to the ones Atlas always hides.
+   *
+   * No production caller populates this today; the live defence-in-depth
+   * against a broad parent being bound back in is the `atlasHome` mask. Kept
+   * for a caller that needs to hide a one-off path.
+   */
   readonly alwaysHidden: readonly string[];
 }
 
 export interface BwrapCommand {
   readonly argv: readonly string[];
-  /** Paths masked from view, recorded for the status line and the report. */
+  /**
+   * Paths hidden from the sandbox OR pinned read-only.
+   *
+   * This conflates two different guarantees: the explicit masks (real tmpfs
+   * mounts, invisible) and the protected subpaths (re-bound `--ro-bind`, which
+   * is tamper-proof but still readable). A caller that renders this must say
+   * "hidden or read-only", not "hidden". Recorded for diagnostics; nothing
+   * consumes it in production today.
+   */
   readonly hiddenPaths: readonly string[];
 }
 
@@ -142,8 +162,8 @@ export function sandboxEnv(
     if (value !== undefined && value !== '') env[name] = value;
   }
   // A PATH the model could influence would hand it a binary we did not vet.
-  env['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-  env['HOME'] = env['HOME'] ?? '/tmp/atlas-home';
+  env.PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+  env.HOME = env.HOME ?? '/tmp/atlas-home';
   return env;
 }
 
@@ -192,6 +212,27 @@ export function buildBwrapCommand(
 ): BwrapCommand {
   const cwd = resolve(policy.cwd);
   const args: string[] = [bwrapPath];
+
+  // A root of `/` cannot be sandboxed by this policy. Starting from an empty
+  // root and then binding the host root back over it does not narrow anything:
+  // it hands the sandbox the whole host. It also silently voids the
+  // protected-subpath pass below, because `contains('/')` style prefix tests
+  // stop matching. Fail closed and say why, rather than emitting an argv that
+  // looks confined and is not.
+  const writableForRootCheck =
+    policy.profile === 'workspace-write' ? policy.writableRoots : [];
+  if (cwd === '/') {
+    throw new Error(
+      'refusing to sandbox with cwd=/ : binding the host root back in is not a sandbox',
+    );
+  }
+  for (const root of writableForRootCheck) {
+    if (resolve(root) === '/') {
+      throw new Error(
+        'refusing a writable root of / : binding the host root read-write is not a sandbox',
+      );
+    }
+  }
 
   // Order matters and is not arbitrary: session isolation first, then the
   // namespace isolation, then the filesystem, then the environment, then caps.
@@ -252,9 +293,20 @@ export function buildBwrapCommand(
   // Nested masks are dropped: once `~/.config` has been replaced by an empty
   // tmpfs, creating a mount point inside it fails with EROFS, and the child
   // mask adds nothing the parent does not already provide.
-  const userHome = process.env['HOME'] ?? '/root';
+  const userHome = process.env.HOME ?? '/root';
   const masked: string[] = [];
-  for (const path of [...hostPathsToMask(userHome), ...policy.alwaysHidden]) {
+  // `atlasHome` is here, not only in the protected-subpaths pass: that pass
+  // emits a READ-ONLY bind, which is tamper-proof but still readable, and it
+  // only runs when Atlas state happens to sit inside a writable root. Atlas
+  // state holds `config.json` with the provider API key, so it must be absent
+  // from view, not merely read-only. A tmpfs mask is the only thing that makes
+  // the field's "never visible" true when cwd is the home directory - which is
+  // the common case, since that read-only bind covers `~/.atlas` whole.
+  for (const path of [
+    ...hostPathsToMask(userHome),
+    policy.atlasHome,
+    ...policy.alwaysHidden,
+  ]) {
     if (!existsSync(path)) continue;
     if (masked.some((parent) => path === parent || path.startsWith(`${parent}/`))) {
       continue;
@@ -295,7 +347,7 @@ function protectedSubpathsIn(
     ...protectedGitTargets(root),
   ];
   const inside = targets
-    .filter((target) => target.path.startsWith(`${root}/`))
+    .filter((target) => contains(root, target.path) && target.path !== root)
     // The install root as a whole is only protected when it is NOT the
     // workspace. When the workspace *is* Atlas's own repo, re-binding the root
     // read-only here would make the entire workspace unwritable - including

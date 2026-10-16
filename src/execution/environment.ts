@@ -37,6 +37,27 @@ export const CONFINING_PROFILES: readonly ProtectionProfile[] = [
   'workspace-write',
 ];
 
+/**
+ * Parses a profile name from the environment.
+ *
+ * An `as` cast performs no validation: `ATLAS_SANDBOX_PROFILE=bogus` would flow
+ * through as a value that satisfies the type but not the runtime, and only be
+ * rejected later when the audit schema refused the append - mid-turn, far from
+ * the cause. Refusing it here names the variable and the legal values.
+ */
+export function parseProfile(
+  value: string | undefined,
+): ProtectionProfile | undefined {
+  if (value === undefined || value === '') return undefined;
+  if ((CONFINING_PROFILES as readonly string[]).includes(value) || value === 'full-access') {
+    return value as ProtectionProfile;
+  }
+  throw new Error(
+    `ATLAS_SANDBOX_PROFILE must be one of read-only, workspace-write, ` +
+      `full-access; got ${JSON.stringify(value)}`,
+  );
+}
+
 /** What kind of isolation is actually active. */
 export type ExecutionBackend = 'local' | 'bwrap';
 
@@ -115,7 +136,14 @@ export function confinesFilesystem(
   return environment.status.sandboxed;
 }
 
-/** Renders a status as the single line shown to the user. */
+/**
+ * Renders a status as the single line shown to the user.
+ *
+ * When the sandbox is not actually confining, the degraded reason is part of
+ * this line rather than a separate warning. A status line that reports
+ * "SANDBOX OFF" without saying what that means leaves the user to guess, and
+ * the guess they are most likely to make - "so it is fine" - is the wrong one.
+ */
 export function describeStatus(status: ExecutionStatus): string {
   const parts: string[] = [];
   if (!status.sandboxed) {
@@ -131,5 +159,8 @@ export function describeStatus(status: ExecutionStatus): string {
   );
   parts.push(`network: ${status.networkEnabled ? 'on' : 'off'}`);
   parts.push(`seccomp: ${status.seccomp ? 'on' : 'off'}`);
-  return parts.join(' | ');
+  const line = parts.join(' | ');
+  return status.degradedReason === undefined
+    ? line
+    : `${line} -- ${status.degradedReason}`;
 }

@@ -36,12 +36,10 @@ export const DEGRADED_MODE_NOTICE =
 
 export class LocalEnvironment implements ExecutionEnvironment {
   readonly status: ExecutionStatus;
-  readonly #notice: string | undefined;
 
   public constructor(options: LocalEnvironmentOptions = {}) {
     const reason =
       options.degradedReason ?? DEGRADED_MODE_NOTICE;
-    this.#notice = reason;
     this.status = {
       backend: 'local',
       // full-access, not workspace-write: this backend has no boundary, so
@@ -56,7 +54,10 @@ export class LocalEnvironment implements ExecutionEnvironment {
   }
 
   public describe(): string {
-    return `${describeStatus(this.status)}. ${this.#notice ?? ''}`.trim();
+    // `describeStatus` already appends `-- ${degradedReason}` for an
+    // unsandboxed status, and `#notice` is that same string. Appending it here
+    // as well printed the reason twice.
+    return describeStatus(this.status);
   }
 
   public createSession(

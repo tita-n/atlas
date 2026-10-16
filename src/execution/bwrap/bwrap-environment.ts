@@ -13,10 +13,14 @@
  * `restart()` brings up a fresh sandbox in the same directory. Shell-local
  * `export`s do not survive that. The escalation flow says so before it does it.
  *
- * **NoNewPrivs is proven, not assumed.** bubblewrap sets it as part of user
- * namespace setup, but "the man page implies it" is not evidence, so the
- * sandbox verifies `NoNewPrivs: 1` from inside before it reports itself as
- * confining.
+ * **NoNewPrivs is proven on demand, not assumed.** bubblewrap sets it as part
+ * of user namespace setup, but "the man page implies it" is not evidence, so
+ * {@link BwrapEnvironment.verifyIsolation} runs the check from INSIDE the
+ * sandbox and can report `NoNewPrivs: 1` as observed rather than inferred. It
+ * is a probe with no production caller yet: startup resolves the backend on a
+ * cheap `--version`-style probe, and calling a second bwrap on every session
+ * start was not worth the latency. The claim it supports is therefore "this is
+ * checkable and here is the check", not "this ran".
  */
 
 import { spawn } from 'node:child_process';
@@ -222,6 +226,6 @@ async function defaultRunner(
     child.once('error', (error) => {
       resolve({ code: null, stdout, stderr: `${stderr}${error.message}` });
     });
-    child.once('close', (code) => resolve({ code, stdout, stderr }));
+    child.once('close', (code) => { resolve({ code, stdout, stderr }); });
   });
 }
