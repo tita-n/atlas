@@ -28,6 +28,8 @@ async function fixture(options: { gatePath?: GatePath } = {}): Promise<{
   audit: AuditLog;
   session: ShellSession;
   confirmText: ReturnType<typeof vi.fn>;
+  /** Sets what the (simulated) user answers, keeping `asked` true. */
+  respondWith: (verdict: boolean) => void;
   close: () => void;
 }> {
   const directory = await mkdtemp(join(tmpdir(), 'atlas-shell-tool-'));
@@ -44,13 +46,27 @@ async function fixture(options: { gatePath?: GatePath } = {}): Promise<{
         model: 'mock',
       }),
   };
-  const confirmText = vi.fn().mockResolvedValue(false);
+  // Reports `asked` like the real prompt does. A mock that stays silent is
+  // read as "nobody was asked", so tests that simulate a user answering must
+  // say so explicitly.
+  // Reports `asked` the way the real prompt does. `mockResolvedValue` would
+  // strip that behaviour and make every simulated approval look unasked.
+  let verdict = false;
+  const confirmText = vi.fn(
+    (_request: unknown, markAsked?: (value: boolean) => void) => {
+      markAsked?.(true);
+      return Promise.resolve(verdict);
+    },
+  );
   const confirmation = new ConfirmationFlow({
     provider,
     model: 'mock',
     confirmText,
     wait: () => Promise.resolve(),
   });
+  const respondWith = (value: boolean): void => {
+    verdict = value;
+  };
   const tool = new ShellTool({
     session,
     classifier: new RiskClassifier(),
@@ -63,6 +79,7 @@ async function fixture(options: { gatePath?: GatePath } = {}): Promise<{
     audit,
     session,
     confirmText,
+    respondWith,
     close: () => {
       database.close();
     },
@@ -120,7 +137,7 @@ describe('ShellTool', () => {
     const target = join(directory, 'target.txt');
     await writeFile(target, 'before');
     const fixtureValue = await fixture();
-    fixtureValue.confirmText.mockResolvedValue(true);
+    fixtureValue.respondWith(true);
     try {
       const result = await fixtureValue.tool.execute({
         id: 'call-1',
@@ -143,7 +160,7 @@ describe('ShellTool', () => {
     // Regression with teeth: the failure path used to append with no
     // gatePath, leaving a decision the gate had already made unattributed.
     const fixtureValue = await fixture({ gatePath: 'text-safe-word' });
-    fixtureValue.confirmText.mockResolvedValue(true);
+    fixtureValue.respondWith(true);
     try {
       vi.spyOn(fixtureValue.session, 'execute').mockRejectedValue(
         new Error('shell exploded'),
@@ -176,7 +193,7 @@ describe('ShellTool', () => {
     const target = join(directory, 'target.txt');
     await writeFile(target, 'before');
     const fixtureValue = await fixture();
-    fixtureValue.confirmText.mockResolvedValue(false);
+    fixtureValue.respondWith(false);
     try {
       const result = await fixtureValue.tool.execute({
         id: 'call-1',
