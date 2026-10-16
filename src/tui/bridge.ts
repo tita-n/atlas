@@ -11,6 +11,7 @@
  * waiting on an interface that is not there.
  */
 
+import type { ExecutionStatus } from '../execution/environment.js';
 import type { ToolCall } from '../providers/provider.interface.js';
 
 /**
@@ -62,6 +63,25 @@ export class TuiBridge {
 
   /** Replaced by the app on mount; ignores by default. */
   onToolStart: ToolStartObserver = () => undefined;
+
+  /**
+   * The isolation in force, as reported by the runtime at startup.
+   *
+   * Read during render rather than subscribed to: it is set once, before the
+   * app mounts, and Ink re-renders on every state change anyway. A
+   * subscription would be machinery for a value that never moves.
+   */
+  #protection: ExecutionStatus | undefined;
+
+  /** Records the protection mode so the status bar can display it. */
+  setProtection(status: ExecutionStatus): void {
+    this.#protection = status;
+  }
+
+  /** The protection mode, or undefined when it was never resolved. */
+  get protection(): ExecutionStatus | undefined {
+    return this.#protection;
+  }
 
   /**
    * Pass this to the runtime's `requestConfirmation`.

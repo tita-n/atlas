@@ -40,6 +40,10 @@ import { FactExtractor } from '../memory/fact-extractor.js';
 import { CorrectionExtractor } from '../memory/correction-extractor.js';
 import { AuditLog } from '../audit/audit-log.js';
 import { resolveExecutionEnvironment } from '../execution/resolve-environment.js';
+import { initialProfile } from '../execution/escalation.js';
+import type { ProtectionProfile } from '../execution/environment.js';
+import { parseProfile } from '../execution/environment.js';
+import { isTrusted } from '../execution/trust.js';
 import type {
   ExecutionSession,
   ExecutionStatus,
@@ -308,31 +312,78 @@ export async function createAssistantRuntime(
     // there is no way to construct a session that never went through the
     // decision - and so the protection status can be reported rather than
     // assumed.
+    //
+    // An explicit ATLAS_SANDBOX_PROFILE always wins, so the choice stays
+    // configurable rather than hard-coded. Otherwise the profile comes from
+    // the directory TRUST RECORD: an unknown directory starts read-only, and
+    // workspace-write is something the user agreed to rather than something
+    // that happened because Atlas was launched somewhere new.
+    const cwd = process.cwd();
+    // Validated, not cast: a bad value must fail at startup with the variable's
+    // name, not silently corrupt the profile and blow up on an audit append.
+    const requestedProfile = parseProfile(process.env.ATLAS_SANDBOX_PROFILE);
+    const trusted = await isTrusted(assistantConfig.homeDirectory, cwd);
+    const profile: ProtectionProfile =
+      requestedProfile ?? initialProfile(trusted);
     const environment = await resolveExecutionEnvironment({
-      cwd: process.cwd(),
+      cwd,
       atlasHome: assistantConfig.homeDirectory,
-      // Configurable rather than hard-coded so the default can change without
-      // a code change.
-      profile: (process.env['ATLAS_SANDBOX_PROFILE'] ??
-        'workspace-write') as 'read-only' | 'workspace-write' | 'full-access',
-      writableRoots: [process.cwd()],
-      networkEnabled: process.env['ATLAS_SANDBOX_NETWORK'] === '1',
-      ...(process.env['ATLAS_FULL_ACCESS'] === '1'
+      profile,
+      writableRoots: [cwd],
+      networkEnabled: process.env.ATLAS_SANDBOX_NETWORK === '1',
+      ...(process.env.ATLAS_FULL_ACCESS === '1'
         ? { forceLocal: true }
         : {}),
     });
     options.onProtectionChange?.(environment.status);
 
+    // Read-only because this directory is unknown. That default is the whole
+    // point - `workspace-write` should be a decision, not an accident - but a
+    // user who hits a read-only error with no way to find the switch just
+    // concludes Atlas is broken. Say how to change it, once, at startup.
+    //
+    // Only when the profile CHOSE read-only. If the user asked for read-only
+    // explicitly, they know, and telling them how to undo their own setting is
+    // noise.
+    if (profile === 'read-only' && requestedProfile === undefined) {
+      notices.line(
+        `Read-only: this directory is not trusted for writing yet. ` +
+          // `.` rather than the absolute path: a cwd with spaces or shell
+          // metacharacters produced a command that could not be pasted, and
+          // `atlas trust add .` is already relative to where the user is.
+          `Run \`atlas trust add .\` to let Atlas write here ` +
+          `(see \`atlas trust list\` for what is already trusted).`,
+      );
+    }
+
     shellSession = environment.createSession({ cwd: process.cwd() });
     shellSession.restart();
     const sessionForShell = shellSession;
-    const shellTool = new ShellTool({
+    const status = environment.status;
+    const shellTool: ShellTool = new ShellTool({
       session: sessionForShell,
       classifier,
       confirmation,
       auditLog: new AuditLog(database),
       name: 'shell',
       grantStore,
+      // Read at write time so every row carries the isolation that was in
+      // force for THAT command. Without this the audit log cannot answer
+      // "was this confined at the time?", which is the only question it is
+      // worth asking after an escape.
+      //
+      // `escalated` is NOT derived from the profile. Under `full-access` there
+      // is no implied sandbox, so nothing was escalated: the user chose that
+      // profile for the whole session. Deriving it from the profile stamped
+      // `escalated = 1` on every row while `gate_path` said `auto-allow`, so
+      // the two most reviewable columns contradicted each other.
+      sandbox: () => ({
+        backend: status.backend,
+        profile: status.profile,
+        writableRoots: [...status.writableRoots],
+        networkEnabled: status.networkEnabled,
+        escalated: shellTool.isEscalated(),
+      }),
       // Records which gate approved a dangerous command, so the interim
       // typed-safe-word period is reviewable after the fact.
       gatePath:

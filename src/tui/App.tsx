@@ -1010,6 +1010,9 @@ export function AtlasApp({
           palette={palette}
           color={color}
           animate={motion}
+          {...(bridge.protection === undefined
+            ? {}
+            : { protection: bridge.protection })}
           {...(statusDetail === undefined ? {} : { detail: statusDetail })}
         />
         {descriptor.awaitsUser ? null : (

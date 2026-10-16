@@ -35,5 +35,21 @@ export default tseslint.config(
     files: ['**/*.js', '**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
   },
+  {
+    // The portfolio page is browser JavaScript. Linting it with the default
+    // (Node-ish) globals reported every `document` and `window` reference as
+    // undefined, which is noise that trains people to ignore the linter.
+    files: ['portfolio/**/*.js'],
+    languageOptions: {
+      globals: {
+        document: 'readonly',
+        window: 'readonly',
+        localStorage: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        IntersectionObserver: 'readonly',
+      },
+    },
+  },
   prettier,
 );

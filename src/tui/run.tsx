@@ -83,7 +83,16 @@ export async function runTui({
     newConversation,
     requestConfirmation: bridge.requestConfirmation,
     onToolStart: bridge.observeToolStart,
-    ...(onProtectionChange === undefined ? {} : { onProtectionChange }),
+    // Recorded on the bridge so the STATUS BAR shows it. Printing to stdout as
+    // well would put raw text above the interface, which Ink redraws over -
+    // so the plain front-end prints, and the TUI renders.
+    onProtectionChange: (status) => {
+      bridge.setProtection(status);
+      // Forward, do not swallow. The previous version used the caller's
+      // callback only as a truthiness gate and then never invoked it, so a
+      // caller that wanted to observe the status silently got nothing.
+      onProtectionChange?.(status);
+    },
     // Startup notices belong inside the interface, not printed above it.
     notices: {
       line: (message) => {

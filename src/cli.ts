@@ -62,8 +62,16 @@ import {
 import { loadAssistantConfig } from './config/assistant-config.js';
 import { runAssistantCommand } from './conversation/assistant-commands.js';
 import { canRunTui } from './tui/can-run.js';
-import { describeStatus } from './execution/environment.js';
+import { describeStatus, parseProfile } from './execution/environment.js';
 import { resolveExecutionEnvironment } from './execution/resolve-environment.js';
+import {
+  canonicalize,
+  forgetTrust,
+  isTrusted,
+  loadTrust,
+  rememberTrust,
+} from './execution/trust.js';
+import { initialProfile } from './execution/escalation.js';
 import { runVoiceCorrections } from './voice/cli.js';
 import { ConversationRepository } from './memory/conversation-repository.js';
 import { FactExtractor } from './memory/fact-extractor.js';
@@ -611,6 +619,19 @@ async function runChat(
   globalOptions: GlobalOptions,
   options: ChatOptions,
 ): Promise<void> {
+  // This loop owns a HOST shell: it never calls `resolveExecutionEnvironment`,
+  // so nothing confines it, and its audit rows carry no sandbox context. It is
+  // unreachable from the CLI today - `--raw-chat` is not a registered option -
+  // but a dead path that runs unconfined is a trap for whoever wires it back
+  // up. Refuse unless the user has explicitly asked for a sandbox-free session.
+  if (
+    process.env.ATLAS_SANDBOX_PROFILE !== 'full-access' &&
+    process.env.ATLAS_FULL_ACCESS !== '1'
+  ) {
+    throw new Error(
+      'the raw chat loop runs without a sandbox; set ATLAS_FULL_ACCESS=1 to use it',
+    );
+  }
   const config = await loadConfig({
     ...pathOptions(globalOptions, options),
     overrides: compactOverrides(options),
@@ -1298,11 +1319,22 @@ export async function main(argv = process.argv): Promise<void> {
       const environment = await resolveExecutionEnvironment({
         cwd: process.cwd(),
         atlasHome: loadAssistantConfig().homeDirectory,
-        profile: (process.env['ATLAS_SANDBOX_PROFILE'] ??
-          'workspace-write') as 'read-only' | 'workspace-write' | 'full-access',
+        // Same precedence as the runtime: an explicit setting wins, otherwise
+        // the trust record decides. Reporting a profile the session would not
+        // actually use would make this command worse than useless. Validated,
+        // not cast, so `atlas status` refuses a bogus setting the same way a
+        // session would rather than reporting a value it cannot honour.
+        profile:
+          parseProfile(process.env.ATLAS_SANDBOX_PROFILE) ??
+          initialProfile(
+            await isTrusted(
+              loadAssistantConfig().homeDirectory,
+              process.cwd(),
+            ),
+          ),
         writableRoots: [process.cwd()],
-        networkEnabled: process.env['ATLAS_SANDBOX_NETWORK'] === '1',
-        ...(process.env['ATLAS_FULL_ACCESS'] === '1'
+        networkEnabled: process.env.ATLAS_SANDBOX_NETWORK === '1',
+        ...(process.env.ATLAS_FULL_ACCESS === '1'
           ? { forceLocal: true }
           : {}),
       });
@@ -1314,14 +1346,79 @@ export async function main(argv = process.argv): Promise<void> {
         console.log('Provider: not configured (run `atlas config init`)');
       }
       console.log(`Protection: ${describeStatus(environment.status)}`);
-      if (environment.status.degradedReason !== undefined) {
-        console.log(`Warning: ${environment.status.degradedReason}`);
-      }
     });
 
   const selfmod = addCommonOptions(program.command('selfmod'))
     .description('propose, verify, and apply a change to Atlas itself')
     .argument('<file>', 'JSON file describing the proposed change');
+
+  // Directory trust. workspace-write is a real expansion of what a command can
+  // destroy, so the record of who agreed to it lives in Atlas state, outside
+  // every mount, and is withdrawable here.
+  const trust = program
+    .command('trust')
+    .description('manage which directories Atlas may write in');
+  trust
+    .command('list')
+    .description('show directories trusted for workspace-write')
+    .action(async () => {
+      const home = loadAssistantConfig().homeDirectory;
+      const entries = await loadTrust(home);
+      if (entries.length === 0) {
+        console.log(
+          'No directories are trusted. Atlas starts read-only everywhere.',
+        );
+        return;
+      }
+      for (const entry of entries) {
+        console.log(`${entry.path}  (since ${entry.trustedAt})`);
+      }
+    });
+  trust
+    .command('add')
+    .description('trust a directory for workspace-write')
+    .argument('[path]', 'directory to trust', '.')
+    .action(async (path: string) => {
+      const home = loadAssistantConfig().homeDirectory;
+      const canonical = await canonicalize(path);
+      try {
+        await rememberTrust(home, canonical);
+      } catch (error) {
+        // Refusing `/` is the expected failure here, so name it rather than
+        // letting a raw throw reach the user as a stack trace.
+        console.error(
+          error instanceof Error ? error.message : String(error),
+        );
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Trusted for workspace-write: ${canonical}`);
+      console.log(
+        'Atlas state and secrets stay outside the sandbox regardless of this.',
+      );
+    });
+  trust
+    .command('remove')
+    .description('withdraw trust from a directory')
+    .argument('[path]', 'directory to untrust', '.')
+    .action(async (path: string) => {
+      const home = loadAssistantConfig().homeDirectory;
+      const canonical = await canonicalize(path);
+      await forgetTrust(home, canonical);
+      console.log(`No longer trusted: ${canonical}`);
+    });
+  trust
+    .command('status')
+    .description('show whether the current directory is trusted')
+    .action(async () => {
+      const home = loadAssistantConfig().homeDirectory;
+      const canonical = await canonicalize(process.cwd());
+      const ok = await isTrusted(home, canonical);
+      console.log(`Directory: ${canonical}`);
+      console.log(
+        `Trusted:   ${ok ? 'yes (workspace-write)' : 'no (read-only)'}`,
+      );
+    });
 
   const autonomy = addCommonOptions(program.command('autonomy'))
     .description('show or set how often Atlas asks before acting')
