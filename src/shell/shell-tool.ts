@@ -3,6 +3,8 @@ import { AuditLog } from '../audit/audit-log.js';
 import { homedir } from 'node:os';
 import type { ConfirmationFlow } from '../permissions/confirmation-flow.js';
 import type { GatePath } from '../audit/audit-log.schema.js';
+import type { AuditEntryInput } from '../audit/audit-log.schema.js';
+import type { ProtectionProfile } from '../execution/environment.js';
 
 import { describeCommand, planDryRun } from '../permissions/dry-run.js';
 import { hardFloorVerdict } from '../permissions/autonomy.js';
@@ -49,13 +51,29 @@ export interface ShellToolOptions {
   /** Optional user-facing notice callback. */
   onNotice?: ((message: string) => void) | undefined;
   /**
-   * Which gate path is currently active, recorded with every audit entry.
+   * The gate path that applies when the user TYPED the confirmation.
    *
-   * While voice is paused the gate accepts a typed safe word with no voice
-   * verification. Recording which path approved a command is what makes that
-   * interim period reviewable instead of invisible.
+   * This is only the fallback. It used to be stamped onto every row in the
+   * session regardless of what actually happened, which made the column a
+   * restatement of a configuration flag rather than a record of the decision.
+   * The real path is derived per command; see {@link ShellTool.#gatePathFor}.
    */
   gatePath?: GatePath | undefined;
+  /**
+   * The isolation in force, stamped onto every audit row.
+   *
+   * Read at write time, not at construction: a session that escalates out of
+   * the sandbox mid-run must have later rows say so.
+   */
+  sandbox?:
+    | (() => {
+        backend: 'local' | 'bwrap';
+        profile: ProtectionProfile;
+        writableRoots: string[];
+        networkEnabled: boolean;
+        escalated: boolean;
+      })
+    | undefined;
   /**
    * The autonomy level currently in force, stamped onto every audit row.
    *
@@ -91,6 +109,9 @@ export class ShellTool implements ToolExecutor {
   readonly #autonomy:
     (() => 'confirm-everything' | 'scoped-approval' | 'unattended') | undefined;
   #signal: AbortSignal | undefined;
+  readonly #sandbox: (() => NonNullable<AuditEntryInput['sandbox']>) | undefined;
+  /** Set while a command is running outside the sandbox by explicit grant. */
+  #escalated = false;
 
   public constructor(options: ShellToolOptions) {
     this.#session = options.session;
@@ -106,6 +127,98 @@ export class ShellTool implements ToolExecutor {
     this.#onNotice = options.onNotice;
     this.#onActivity = options.onActivity;
     this.#signal = options.signal;
+    this.#sandbox = options.sandbox;
+  }
+
+  /**
+   * The isolation context for the next audit row.
+   *
+   * `escalated` is per-command, not per-session: a grant that ran one command
+   * outside the sandbox must not make the NEXT row claim the same, which is the
+   * same class of bug as the constant `gate_path` this replaced.
+   */
+  #sandboxContext(): NonNullable<AuditEntryInput['sandbox']> | undefined {
+    const current = this.#sandbox?.();
+    if (current === undefined) return undefined;
+    return {
+      backend: current.backend,
+      profile: current.profile,
+      writableRoots: [...current.writableRoots],
+      networkEnabled: current.networkEnabled,
+      escalated: current.escalated || this.#escalated,
+    };
+  }
+
+  /**
+   * The `sandbox` field for an audit row, or nothing.
+   *
+   * Reads {@link #sandboxContext} once. Spreading
+   * `#sandboxContext() === undefined ? {} : { sandbox: #sandboxContext() }`
+   * called it twice per row; harmless for a stable closure, but a caller that
+   * reads live state could produce two different objects, and only the second
+   * was recorded.
+   */
+  #sandboxField(): { sandbox?: NonNullable<AuditEntryInput['sandbox']> } {
+    const sandbox = this.#sandboxContext();
+    return sandbox === undefined ? {} : { sandbox };
+  }
+
+  /**
+   * Which path REALLY decided this command.
+   *
+   * Derived per command from what actually happened, because the column exists
+   * to be truthful:
+   *
+   *   - the hard floor refused it            -> denied-hard-floor
+   *   - the user was asked and said yes      -> the typed/voice path in force
+   *   - the user was asked and said no       -> the same path, with decision=asked-denied
+   *   - refused without asking (block mode)  -> hard-block
+   *   - nobody was asked, and a sandbox held -> auto-allow-sandboxed
+   *   - nobody was asked, nothing confined   -> auto-allow
+   *   - it ran outside the sandbox by grant  -> escalated-out-of-sandbox
+   */
+  #gatePathFor(outcome: {
+    asked: boolean;
+    denied?: boolean;
+  }): GatePath {
+    if (this.#escalated) return 'escalated-out-of-sandbox';
+    if (outcome.denied === true) {
+      // A denial still has to name the path that produced it. Falling through
+      // to the auto-allow branches below would put an ALLOW path on a row whose
+      // outcome is `denied`, and claiming the typed-safe-word path when nobody
+      // was asked is the same class of lie the column exists to prevent.
+      return outcome.asked ? (this.#gatePath ?? 'text-safe-word') : 'hard-block';
+    }
+    if (outcome.asked) return this.#gatePath ?? 'text-safe-word';
+    return this.#sandboxContext()?.backend === 'bwrap'
+      ? 'auto-allow-sandboxed'
+      : 'auto-allow';
+  }
+
+  /**
+   * Whether the command currently in flight is running outside the sandbox.
+   *
+   * Read by the audit writer, which cannot see the private flag, so the two
+   * columns that describe confinement cannot disagree.
+   *
+   * NOTE: nothing in the product calls {@link setEscalated} yet. The escalation
+   * PROMPT is not wired to a front-end; see the report's "not done" section.
+   * Until it is, `escalated` is always false and
+   * `escalated-out-of-sandbox` is unreachable in production - the audit
+   * vocabulary and the flag exist, the flow that would set them does not.
+   */
+  public isEscalated(): boolean {
+    return this.#escalated;
+  }
+
+  /**
+   * Marks subsequent commands as running outside the sandbox.
+   *
+   * Set by the escalation path, cleared as soon as the grant is spent, so the
+   * flag describes one command rather than the rest of the session.
+   */
+  public setEscalated(escalated: boolean): void {
+    this.#escalated = escalated;
   }
 
   /**
@@ -184,6 +297,7 @@ export class ShellTool implements ToolExecutor {
       durationMs: null,
       gatePath: null,
       autonomy: this.#autonomy?.() ?? 'confirm-everything',
+      ...this.#sandboxField(),
     });
     return { content: lines.join('\n') };
   }
@@ -226,8 +340,15 @@ export class ShellTool implements ToolExecutor {
         matchedRule: assessment.matchedRule.id,
         decision: 'blocked',
         outcome: 'denied',
+        // 'hard-block' and 'denied-hard-floor' are different facts. This one is
+        // the classifier's permanent refusal, not the unconditional floor; the
+        // floor's own refusal is recorded below as 'denied-hard-floor'. Block
+        // mode is NOT this branch - it refuses one layer down, in
+        // ConfirmationFlow, and lands on the denial rows with decision
+        // 'blocked' and gate path 'hard-block'.
         gatePath: 'hard-block',
         autonomy: this.#autonomy?.() ?? 'confirm-everything',
+        ...this.#sandboxField(),
         exitCode: null,
         durationMs: null,
       });
@@ -252,8 +373,12 @@ export class ShellTool implements ToolExecutor {
         matchedRule: assessment.matchedRule.id,
         decision: 'blocked',
         outcome: 'denied',
-        gatePath: 'hard-block',
+        // The floor fired, which is a different event from a classifier block
+        // and the one an auditor most needs to see separately: the floor is
+        // not skippable by any grant.
+        gatePath: 'denied-hard-floor',
         autonomy: this.#autonomy?.() ?? 'confirm-everything',
+        ...this.#sandboxField(),
         exitCode: null,
         durationMs: null,
       });
@@ -266,10 +391,20 @@ export class ShellTool implements ToolExecutor {
     }
 
     let approved = true;
+    // Whether a HUMAN was actually asked, as opposed to the command merely
+    // being one that usually needs asking.
+    //
+    // `requiresConfirmation` is not that flag: under `unattended`, or with a
+    // durable grant, a command with requiresConfirmation=true is approved
+    // without anyone being prompted. Using the classifier's flag as a proxy
+    // wrote `asked-approved` / `text-safe-word` onto rows where nobody typed a
+    // safe word, which is the exact lie this column exists to prevent.
+    let confirmationRequested = false;
     if (assessment.requiresConfirmation || assessment.tier === 3) {
       try {
         const outcome = await this.#confirmation.review(command, assessment);
         approved = outcome.approved;
+        confirmationRequested = outcome.confirmationRequested;
         if (outcome.choice === 'remember' && approved) {
           try {
             const remembered = await this.#grantStore?.remember(
@@ -301,10 +436,21 @@ export class ShellTool implements ToolExecutor {
             command,
             riskTier: assessment.tier,
             matchedRule: assessment.matchedRule.id,
-            decision: 'asked-denied',
+            // `confirmationRequested` is what actually happened. Under
+            // ATLAS_TEXT_CONFIRM_MODE=block the flow refuses WITHOUT asking and
+            // reports false, so a hardcoded `asked-denied` here wrote a human
+            // denial onto a mechanical refusal - the exact lie this row exists
+            // to prevent.
+            decision: confirmationRequested ? 'asked-denied' : 'blocked',
             outcome: 'denied',
-            gatePath: this.#gatePath ?? 'text-safe-word',
+            // Not a floor denial: the floor has its own path, and conflating
+            // the two would hide which mechanism actually stopped the command.
+            gatePath: this.#gatePathFor({
+              asked: confirmationRequested,
+              denied: true,
+            }),
             autonomy: this.#autonomy?.() ?? 'confirm-everything',
+            ...this.#sandboxField(),
             exitCode: null,
             durationMs: null,
           });
@@ -323,10 +469,16 @@ export class ShellTool implements ToolExecutor {
           command,
           riskTier: assessment.tier,
           matchedRule: assessment.matchedRule.id,
-          decision: 'asked-denied',
+          // The confirmation machinery failed; nothing was put to a human, so
+          // the row must not claim one answered.
+          decision: confirmationRequested ? 'asked-denied' : 'blocked',
           outcome: 'denied',
-          gatePath: this.#gatePath ?? 'text-safe-word',
+          gatePath: this.#gatePathFor({
+            asked: confirmationRequested,
+            denied: true,
+          }),
           autonomy: this.#autonomy?.() ?? 'confirm-everything',
+          ...this.#sandboxField(),
           exitCode: null,
           durationMs: null,
         });
@@ -352,15 +504,12 @@ export class ShellTool implements ToolExecutor {
         command,
         riskTier: assessment.tier,
         matchedRule: assessment.matchedRule.id,
-        decision: assessment.requiresConfirmation
-          ? 'asked-approved'
-          : 'allowed',
-        // Says what actually happened, not a fixed fallback: a row written
+        decision: confirmationRequested ? 'asked-approved' : 'allowed',
+        // Says what actually happened, not what usually happens: a row written
         // under unattended never had anyone type a safe word.
-        gatePath: assessment.requiresConfirmation
-          ? (this.#gatePath ?? 'text-safe-word')
-          : 'auto-allow',
+        gatePath: this.#gatePathFor({ asked: confirmationRequested }),
         autonomy: this.#autonomy?.() ?? 'confirm-everything',
+        ...this.#sandboxField(),
         // The exit code and duration live in their own columns, so the
         // outcome is a queryable state rather than a sentence.
         outcome:
@@ -406,15 +555,12 @@ export class ShellTool implements ToolExecutor {
         command,
         riskTier: assessment.tier,
         matchedRule: assessment.matchedRule.id,
-        decision: assessment.requiresConfirmation
-          ? 'asked-approved'
-          : 'allowed',
+        decision: confirmationRequested ? 'asked-approved' : 'allowed',
         // A failure to execute is still a decision the gate made, so it names
         // the path that made it rather than dropping the attribution.
-        gatePath: assessment.requiresConfirmation
-          ? (this.#gatePath ?? 'text-safe-word')
-          : 'auto-allow',
+        gatePath: this.#gatePathFor({ asked: confirmationRequested }),
         autonomy: this.#autonomy?.() ?? 'confirm-everything',
+        ...this.#sandboxField(),
         outcome: 'failed',
         exitCode: null,
         durationMs: null,

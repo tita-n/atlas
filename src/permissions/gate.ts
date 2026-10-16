@@ -57,9 +57,15 @@ export function createGate(input: GateInput): ConfirmationFlow {
     // setting was inert. The shape differs on purpose: the audit row wants a
     // level, the gate wants the scope that goes with it.
     autonomy: () => ({ level: input.autonomy() }),
-    ...(input.wait === undefined ? {} : { wait: input.wait }),
-    confirmText: (request): Promise<TextConfirmationResult> => {
-      if (input.blockAll) return Promise.resolve('deny');
+    confirmText: (request, markAsked): Promise<TextConfirmationResult> => {
+      if (input.blockAll) {
+        // Refused without prompting. Reported as NOT asked, because no human
+        // exists at this point - a row claiming an unasked prompt would make
+        // every block-mode refusal look like a person saying no.
+        markAsked?.(false);
+        return Promise.resolve('deny');
+      }
+      markAsked?.(true);
       return input.ask(request);
     },
   });
