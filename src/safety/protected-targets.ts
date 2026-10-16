@@ -154,8 +154,15 @@ export function protectedGitTargets(
   ];
 }
 
-/** True when `candidate` is `root` or lives under it. */
-function contains(root: string, candidate: string): boolean {
+/**
+ * True when `candidate` is `root` or lives under it.
+ *
+ * Exported because the mount policy needs the same answer: a string
+ * `${root}/` prefix test silently returns nothing for `root === '/'`
+ * (the prefix becomes `//`, which no absolute path starts with), which is how
+ * a `/` writable root ended up with none of its protected subpaths pinned.
+ */
+export function contains(root: string, candidate: string): boolean {
   if (candidate === root) return true;
   const rel = relative(root, candidate);
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
