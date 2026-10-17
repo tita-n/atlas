@@ -20,33 +20,12 @@ import {
   type ConfigOverrides,
   type ProviderName,
 } from './config/config.schema.js';
-import { Conversation } from './conversation/conversation.js';
-import { createActivity } from './cli/activity.js';
-import { describeActivity } from './cli/activity.js';
-import {
-  looksLikeCommand,
-  parseSlashCommand,
-  renderHelp,
-} from './cli/repl-commands.js';
 import { AtlasError, CliInputError, getErrorChain } from './errors.js';
 import { AuditLog } from './audit/audit-log.js';
 import { loadPermissionConfig } from './config/permission-config.js';
-import type {
-  ConfirmationRequest,
-  TextConfirmationResult,
-} from './permissions/confirmation-flow.js';
-import { createGate } from './permissions/gate.js';
-import { readAutonomySync } from './permissions/autonomy.js';
-import { RiskClassifier } from './permissions/risk-classifier.js';
+import { setupSudoers } from './permissions/sudoers-setup.js';
 import { PermissionGrantStore } from './permissions/grant-store.js';
-import {
-  setupSudoers,
-  sudoersRuleExists,
-} from './permissions/sudoers-setup.js';
-import { ShellSession } from './shell/shell-session.js';
-import { ShellTool } from './shell/shell-tool.js';
-import { buildSystemPrompt } from './memory/context-builder.js';
-import { openDatabase, type MemoryDatabase } from './memory/database.js';
+import { openDatabase } from './memory/database.js';
 
 import { createAssistantRuntime } from './conversation/assistant-runtime.js';
 import {
@@ -71,15 +50,16 @@ import {
   loadTrust,
   rememberTrust,
 } from './execution/trust.js';
-import { initialProfile } from './execution/escalation.js';
+import { initialProfile } from './execution/trust.js';
+import {
+  disableFullAccess,
+  enableFullAccess,
+  FULL_ACCESS_PHRASE,
+  loadFullAccessGrant,
+} from './execution/full-access.js';
 import { runVoiceCorrections } from './voice/cli.js';
 import { ConversationRepository } from './memory/conversation-repository.js';
-import { FactExtractor } from './memory/fact-extractor.js';
 import { FactsRepository } from './memory/facts-repository.js';
-import { createProvider } from './providers/provider-factory.js';
-
-/** Upper bound on background fact extraction, so /exit cannot stall. */
-const EXTRACTION_BUDGET_MS = 8_000;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -99,8 +79,6 @@ interface ChatOptions extends GlobalOptions {
   maxTokens?: number;
   temperature?: number;
   new?: boolean;
-  /** Use the pre-Phase-4 chat loop. */
-  rawChat?: boolean;
 }
 
 interface ConfigInitOptions extends GlobalOptions {
@@ -184,37 +162,6 @@ function ask(readline: ReadlineInterface, query: string): Promise<string> {
       resolve(answer);
     });
   });
-}
-
-class AsyncLineReader {
-  readonly #readline: ReadlineInterface;
-  readonly #lines: string[] = [];
-  readonly #waiters: ((line: string | undefined) => void)[] = [];
-  #closed = false;
-
-  public constructor(readline: ReadlineInterface) {
-    this.#readline = readline;
-    readline.on('line', (line) => {
-      const waiter = this.#waiters.shift();
-      if (waiter === undefined) this.#lines.push(line);
-      else waiter(line);
-    });
-    readline.once('close', () => {
-      this.#closed = true;
-      for (const waiter of this.#waiters.splice(0)) waiter(undefined);
-    });
-  }
-
-  public next(): Promise<string | undefined> {
-    const line = this.#lines.shift();
-    if (line !== undefined) return Promise.resolve(line);
-    if (this.#closed) return Promise.resolve(undefined);
-    return new Promise((resolve) => this.#waiters.push(resolve));
-  }
-
-  public close(): void {
-    this.#readline.close();
-  }
 }
 
 /**
@@ -615,427 +562,6 @@ function prompt(
   });
 }
 
-async function runChat(
-  globalOptions: GlobalOptions,
-  options: ChatOptions,
-): Promise<void> {
-  // This loop owns a HOST shell: it never calls `resolveExecutionEnvironment`,
-  // so nothing confines it, and its audit rows carry no sandbox context. It is
-  // unreachable from the CLI today - `--raw-chat` is not a registered option -
-  // but a dead path that runs unconfined is a trap for whoever wires it back
-  // up. Refuse unless the user has explicitly asked for a sandbox-free session.
-  if (
-    process.env.ATLAS_SANDBOX_PROFILE !== 'full-access' &&
-    process.env.ATLAS_FULL_ACCESS !== '1'
-  ) {
-    throw new Error(
-      'the raw chat loop runs without a sandbox; set ATLAS_FULL_ACCESS=1 to use it',
-    );
-  }
-  const config = await loadConfig({
-    ...pathOptions(globalOptions, options),
-    overrides: compactOverrides(options),
-  });
-  const provider = createProvider(config);
-  const debug = debugOptions(globalOptions, options);
-  const database = openDatabase();
-  let conversation: Conversation | undefined;
-  let readline: ReadlineInterface | undefined;
-  let lineReader: AsyncLineReader | undefined;
-  let shellSession: ShellSession | undefined;
-  const activity = createActivity();
-  // Tracks whether a turn is in flight, so Ctrl+C can cancel a turn instead
-  // of tearing down the whole session.
-  let turnActive = false;
-  let turnAbort: AbortController | undefined;
-  // Resolves when the current turn is cancelled, so a confirmation prompt
-  // blocked on input can be released by Ctrl+C instead of hanging.
-  let turnCancelled: Promise<'cancelled'> | undefined;
-  // Lines typed while a turn was running that turned out not to be answers to
-  // a permission prompt. The REPL replays them once the turn finishes.
-  const deferredLines: string[] = [];
-
-  try {
-    const conversations = new ConversationRepository(database);
-    const permissionConfig = await loadPermissionConfig();
-    const grantStore = PermissionGrantStore.fromConfig(permissionConfig);
-    const classifier = new RiskClassifier({
-      userRules: permissionConfig.rules,
-      sudoWhitelistInstalled: await sudoersRuleExists(),
-      grantMatcher: grantStore,
-    });
-    const auditLog = new AuditLog(database);
-    shellSession = new ShellSession();
-    shellSession.restart();
-    readline = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: process.stdin.isTTY ?? false,
-    });
-    lineReader = new AsyncLineReader(readline);
-    const facts = new FactsRepository(database);
-    const latestConversation =
-      options.new === true
-        ? undefined
-        : conversations.getMostRecentConversation();
-    const extractor = new FactExtractor({
-      provider,
-      factsRepository: facts,
-      model: config.model,
-    });
-    // The same factory the TUI uses. `atlas chat` previously built its own
-    // ConfirmationFlow with neither the hard floor nor autonomy wired in, so the
-    // two entry points into the same program had different safety envelopes.
-    const confirmation = createGate({
-      provider,
-      model: config.model,
-      home: process.env.HOME ?? '/',
-      blockAll: loadAssistantConfig().textConfirmMode === 'block',
-      autonomy: () =>
-        readAutonomySync(loadAssistantConfig().homeDirectory).level,
-      ...(permissionConfig.confirmationPhrase === undefined
-        ? {}
-        : { phrase: permissionConfig.confirmationPhrase }),
-      ask: async (
-        request: ConfirmationRequest,
-      ): Promise<TextConfirmationResult> => {
-        // The activity line owns the cursor while a turn runs, so it must be
-        // cleared before the prompt reads a line, and restored afterwards.
-        activity.stop();
-        if (request.sudoSetupRequired) {
-          console.log(
-            'Sudo package setup is not installed. Run "atlas permissions setup" to enable passwordless package management.',
-          );
-        }
-        console.log(`\n${request.explanation}`);
-        // The command itself is always shown. A prompt that describes a risk
-        // without showing what is being run cannot be approved knowingly.
-        console.log(`\nCommand: ${request.command}`);
-        if (lineReader === undefined) {
-          activity.start('Thinking');
-          return 'deny';
-        }
-        for (;;) {
-          process.stdout.write(
-            `Type ${request.phrase} once, ${request.phrase} remember, or deny: `,
-          );
-          const answer =
-            turnCancelled === undefined
-              ? await lineReader.next()
-              : await Promise.race([lineReader.next(), turnCancelled]);
-          const normalized = answer?.trim() ?? '';
-          if (normalized === `${request.phrase} remember`) {
-            activity.start('Thinking');
-            return 'remember';
-          }
-          if (normalized === request.phrase) {
-            activity.start('Thinking');
-            return 'once';
-          }
-          if (
-            normalized === 'deny' ||
-            normalized === 'no' ||
-            normalized === 'n'
-          ) {
-            activity.start('Thinking');
-            return 'deny';
-          }
-          if (answer === undefined || answer === 'cancelled') {
-            activity.stop();
-            console.log('\nCancelled. Nothing was executed.\n');
-            return 'deny';
-          }
-          // Not an answer: this was a message typed before or during the turn.
-          // It is held aside and answered after the turn instead of being
-          // consumed here, so nothing the user typed is ever lost.
-          deferredLines.push(answer);
-          console.log(
-            'That was not an approval. Nothing ran, and your message was kept.',
-          );
-        }
-      },
-    });
-    const shellTool = new ShellTool({
-      session: shellSession,
-      classifier,
-      confirmation,
-      auditLog,
-      grantStore,
-      onNotice: (message) => {
-        activity.stop();
-        console.log(message);
-        if (turnActive) activity.start('Thinking');
-      },
-      onActivity: (message) => {
-        activity.start(`Running ${describeActivity(message)}`);
-      },
-    });
-
-    const startConversation = (resumeId?: string): Conversation =>
-      new Conversation({
-        model: config.model,
-        ...(config.maxTokens === undefined
-          ? {}
-          : { maxTokens: config.maxTokens }),
-        ...(config.temperature === undefined
-          ? {}
-          : { temperature: config.temperature }),
-        conversationRepository: conversations,
-        ...(resumeId === undefined ? {} : { conversationId: resumeId }),
-        buildSystemPrompt: () => buildSystemPrompt(facts.getAllFacts()),
-        tools: [shellTool.definition],
-        toolExecutor: shellTool,
-        toolChoice: 'auto',
-        onTurnComplete: async (turn) => {
-          try {
-            // Bounded so quitting right after a turn cannot stall on a slow
-            // extraction call. Losing an extracted fact is far better than
-            // hanging the exit.
-            await Promise.race([
-              extractor.extractAndStore({
-                userContent: turn.userMessage.content,
-                assistantContent: turn.assistantMessage.content,
-                sourceMessageId: turn.userMessageId,
-              }),
-              new Promise((resolve) => {
-                setTimeout(resolve, EXTRACTION_BUDGET_MS).unref?.();
-              }),
-            ]);
-          } catch (error) {
-            if (debug) printError(error, true);
-          }
-        },
-      });
-
-    conversation = startConversation(latestConversation?.id);
-
-    console.log(`Atlas ${VERSION} - ${config.provider} / ${config.model}`);
-    console.log(
-      latestConversation === undefined
-        ? 'Started a new conversation.'
-        : `Resuming conversation ${latestConversation.id}.`,
-    );
-    console.log('Shell tool enabled; commands are permission-gated.');
-    console.log('Type /help for commands, /exit or Ctrl+D to quit.\n');
-
-    let idleSigints = 0;
-    const onSigint = (): void => {
-      if (turnActive) {
-        // Cancel only the current turn; the session and its history survive.
-        turnAbort?.abort();
-        return;
-      }
-      idleSigints += 1;
-      if (idleSigints === 1) {
-        console.log('\nPress Ctrl+C again to exit, or /exit.');
-        return;
-      }
-      // Close the input so the loop ends on its own and the cleanup below
-      // still runs; exitCode carries the interrupt status.
-      readline?.close();
-      process.exitCode = 130;
-    };
-    // In terminal mode readline consumes Ctrl+C and re-emits it on the
-    // readline interface, so the process-level listener never fires. Bind to
-    // whichever source this session actually delivers, and only once.
-    if (process.stdin.isTTY) {
-      readline.on('SIGINT', onSigint);
-    } else {
-      process.on('SIGINT', onSigint);
-    }
-
-    try {
-      while (true) {
-        readline.setPrompt('atlas> ');
-        readline.prompt();
-        // Anything typed during the turn that was not a prompt answer is
-        // replayed first, so it is never silently dropped.
-        const line =
-          deferredLines.length > 0
-            ? deferredLines.shift()
-            : await lineReader.next();
-        if (line === undefined) break;
-        idleSigints = 0;
-        activity.stop();
-        const message = line.trim();
-        if (message === '/exit' || message === '/quit') break;
-        if (message === '') continue;
-
-        const command = parseSlashCommand(message);
-        if (command !== undefined) {
-          const handled = runReplCommand(command.name, command.argument, {
-            conversation,
-            database,
-            provider: config.provider,
-            model: config.model,
-            conversationId: conversation?.id ?? latestConversation?.id,
-            restartConversation: () => {
-              conversation = startConversation();
-            },
-          });
-          if (handled === 'grants') {
-            try {
-              await runGrantsList();
-            } catch (error) {
-              printError(error, false);
-            }
-          } else if (handled === 'unknown') {
-            console.log(
-              `Unknown command /${command.name}. Type /help to see what is available.`,
-            );
-          }
-          continue;
-        }
-        if (message.startsWith('/')) {
-          console.log(
-            'Commands start with a name, for example /help. Type /help to see all of them.',
-          );
-          continue;
-        }
-        if (looksLikeCommand(message)) continue;
-
-        turnActive = true;
-        turnAbort = new AbortController();
-        turnCancelled = new Promise<'cancelled'>((resolve) => {
-          turnAbort?.signal.addEventListener(
-            'abort',
-            () => {
-              resolve('cancelled');
-            },
-            { once: true },
-          );
-        });
-        shellTool.setAbortSignal(turnAbort.signal);
-        activity.start('Thinking');
-        try {
-          const response = await conversation.send(provider, message, {
-            signal: turnAbort.signal,
-          });
-          activity.stop();
-          const text = response.content.trim();
-          console.log(
-            text === ''
-              ? '\natlas: (no text in the response)\n'
-              : `\natlas: ${response.content}\n`,
-          );
-        } catch (error) {
-          activity.stop();
-          if (turnAbort.signal.aborted) {
-            console.log(
-              '\natlas: stopped. Nothing was lost; ask again to retry.\n',
-            );
-          } else {
-            printError(error, debug);
-            console.log('');
-          }
-        } finally {
-          turnActive = false;
-          turnAbort = undefined;
-          turnCancelled = undefined;
-          shellTool.setAbortSignal(undefined);
-        }
-      }
-    } finally {
-      readline.removeListener('SIGINT', onSigint);
-      process.removeListener('SIGINT', onSigint);
-      readline.close();
-    }
-    // Deliberately no process.exit() here: it would skip the finally that
-    // flushes the conversation and terminates the persistent bash child.
-  } finally {
-    await conversation?.flush();
-    shellSession?.close();
-    database.close();
-  }
-}
-
-/** Outcome of handling a slash command inside the REPL. */
-type ReplCommandResult = 'handled' | 'unknown' | 'grants';
-
-function runReplCommand(
-  name: string,
-  argument: string,
-  context: {
-    conversation: Conversation | undefined;
-    database: MemoryDatabase;
-    provider: string;
-    model: string;
-    conversationId: string | undefined;
-    restartConversation: () => void;
-  },
-): ReplCommandResult {
-  switch (name) {
-    case 'help': {
-      console.log(renderHelp());
-      return 'handled';
-    }
-    case 'new':
-    case 'clear':
-    case 'reset': {
-      // Clearing memory alone would leave the model on a fresh history while
-      // the stored conversation still held the old messages, so a real new
-      // conversation is started instead.
-      context.restartConversation();
-      console.log('Started a new conversation.');
-      return 'handled';
-    }
-    case 'history': {
-      const conversations = new ConversationRepository(
-        context.database,
-      ).listConversations();
-      if (conversations.length === 0) {
-        console.log('No conversations stored.');
-        return 'handled';
-      }
-      for (const entry of conversations) {
-        // The comparison must be parenthesised: `+` binds tighter than `===`,
-        // so the previous form compared a whole sentence to a bare id and
-        // always printed an empty line.
-        const isCurrent = entry.id === context.conversationId;
-        console.log(
-          `${entry.id}  ${formatDate(entry.startedAt)}  ` +
-            `${entry.messageCount} message${entry.messageCount === 1 ? '' : 's'}` +
-            (isCurrent ? '  (current)' : ''),
-        );
-      }
-      return 'handled';
-    }
-    case 'memory': {
-      const facts = new FactsRepository(context.database).getAllFacts();
-      if (facts.length === 0) {
-        console.log('No memory facts stored.');
-        return 'handled';
-      }
-      for (const fact of facts) {
-        const category = fact.category === null ? '' : ` [${fact.category}]`;
-        console.log(`${fact.id}${category}: ${fact.content}`);
-      }
-      return 'handled';
-    }
-    case 'grants':
-      // Fire-and-forget would print after the next prompt, and could be lost
-      // entirely at /exit, so this path is awaited by the caller.
-      return 'grants';
-    case 'audit': {
-      const parsed = Number.parseInt(argument, 10);
-      runAudit({
-        limit: Number.isFinite(parsed) && parsed > 0 ? parsed : 10,
-      });
-      return 'handled';
-    }
-    case 'status': {
-      console.log(`Provider: ${context.provider}`);
-      console.log(`Model:    ${context.model}`);
-      console.log(
-        `Chat:     ${context.conversationId ?? 'none (new conversation)'}`,
-      );
-      return 'handled';
-    }
-    default:
-      return 'unknown';
-  }
-}
-
 function runMemoryList(): void {
   const database = openDatabase();
   try {
@@ -1420,6 +946,56 @@ export async function main(argv = process.argv): Promise<void> {
       );
     });
 
+  // Full access. The one mode with no sandbox at all, so it is enabled by a
+  // typed phrase and recorded with a digest outside every mount. The record,
+  // not an environment variable, is what the resolver consults.
+  const fullAccess = program
+    .command('full-access')
+    .description('enable or disable running with no sandbox (full access)');
+  fullAccess
+    .command('enable')
+    .description('enable full access after typing the confirmation phrase')
+    .option('--phrase <phrase>', 'the confirmation phrase, for scripting')
+    .action(async (opts: { phrase?: string }) => {
+      const home = loadAssistantConfig().homeDirectory;
+      const phrase =
+        opts.phrase ?? (await promptText(`Type "${FULL_ACCESS_PHRASE}" to confirm: `));
+      try {
+        const record = await enableFullAccess(home, phrase);
+        console.log('Full access ENABLED.');
+        console.log(`Since: ${record.enabledAt}`);
+        console.log(
+          'Atlas will now run commands directly on this computer with no ' +
+            'sandbox. The text-based safety checks are a best-effort heuristic ' +
+            'and are known to be bypassable in this mode.',
+        );
+        console.log('Disable it with: atlas full-access disable');
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+      }
+    });
+  fullAccess
+    .command('disable')
+    .description('disable full access (recommended)')
+    .action(async () => {
+      const home = loadAssistantConfig().homeDirectory;
+      await disableFullAccess(home);
+      console.log('Full access DISABLED. Atlas starts in the sandbox again.');
+    });
+  fullAccess
+    .command('status')
+    .description('show whether full access is enabled')
+    .action(async () => {
+      const home = loadAssistantConfig().homeDirectory;
+      const grant = await loadFullAccessGrant(home);
+      console.log(
+        grant === null
+          ? 'Full access: OFF'
+          : `Full access: ON (since ${grant.enabledAt})`,
+      );
+    });
+
   const autonomy = addCommonOptions(program.command('autonomy'))
     .description('show or set how often Atlas asks before acting')
     .option('--level <level>', `set the level: ${AUTONOMY_LEVELS.join(', ')}`)
@@ -1495,11 +1071,10 @@ export async function main(argv = process.argv): Promise<void> {
   chat.action(async () => {
     const global = program.opts<GlobalOptions>();
     const local = chat.opts<ChatOptions>();
-    // Phase 4: the assistant loop replaces the raw chat loop.
-    if (local.rawChat === true) {
-      await runChat(global, local);
-      return;
-    }
+    // The pre-Phase-4 `runChat` loop was deleted: it owned a HOST shell, never
+    // resolved an execution environment, and recorded no sandbox context. It was
+    // already unreachable (no `--raw-chat` option was ever registered), and a
+    // dead path that runs unconfined is a trap for whoever wires it back up.
     await runAssistant(global, local);
   });
 

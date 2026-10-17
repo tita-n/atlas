@@ -5,7 +5,11 @@ import { join } from 'node:path';
 
 import { describeStatus, parseProfile } from '../../src/execution/environment.js';
 import type { ExecutionStatus } from '../../src/execution/environment.js';
-import { LocalEnvironment, DEGRADED_MODE_NOTICE } from '../../src/execution/local-environment.js';
+import {
+  FULL_ACCESS_NOTICE,
+  LocalEnvironment,
+} from '../../src/execution/local-environment.js';
+import { enableFullAccess } from '../../src/execution/full-access.js';
 import { resolveExecutionEnvironment } from '../../src/execution/resolve-environment.js';
 
 const status = (over: Partial<ExecutionStatus> = {}): ExecutionStatus => ({
@@ -36,17 +40,35 @@ describe('describeStatus', () => {
     expect(line).not.toContain('sandbox: local');
   });
 
-  it('carries the degraded REASON on the line itself', () => {
-    // The gap the fail-closed matrix found: "SANDBOX OFF" alone leaves the
-    // user to guess, and the guess they make is "so it is fine".
+  it('gives the REFUSING state its own words, not full-access', () => {
+    // The bug this guards: a machine with no working sandbox reported
+    // `full-access | network: on`, which reads as "you chose this" when the
+    // truth is "there is no sandbox and Atlas is refusing to run anyway".
     const line = describeStatus(
       status({
         sandboxed: false,
-        backend: 'local',
-        degradedReason: 'sandbox unavailable: dangerous commands will be refused, not sandboxed.',
+        backend: 'refusing',
+        profile: 'read-only',
+        writableRoots: [],
+        networkEnabled: false,
+        degradedReason: 'sandbox unavailable: bubblewrap was not found',
       }),
     );
-    expect(line).toContain('dangerous commands will be refused, not sandboxed');
+    expect(line).toContain('SANDBOX UNAVAILABLE');
+    expect(line).toContain('refusing');
+    expect(line).not.toContain('full-access');
+    expect(line).not.toContain('network: on');
+  });
+
+  it('carries the degraded REASON on the line itself', () => {
+    const line = describeStatus(
+      status({
+        sandboxed: false,
+        backend: 'refusing',
+        degradedReason: 'sandbox unavailable: bubblewrap was not found',
+      }),
+    );
+    expect(line).toContain('bubblewrap was not found');
   });
 
   it('says "writable: none" rather than an empty fragment', () => {
@@ -65,10 +87,11 @@ describe('LocalEnvironment', () => {
     expect(new LocalEnvironment().status.profile).toBe('full-access');
   });
 
-  it('always carries a degraded reason', () => {
-    expect(new LocalEnvironment().status.degradedReason).toBe(
-      DEGRADED_MODE_NOTICE,
-    );
+  it('always carries the full-access warning, naming the heuristic', () => {
+    expect(new LocalEnvironment().status.degradedReason).toBe(FULL_ACCESS_NOTICE);
+    // The warning must name the weakness rather than only the state.
+    expect(FULL_ACCESS_NOTICE).toContain('no sandbox');
+    expect(FULL_ACCESS_NOTICE).toContain('bypassable');
   });
 });
 
@@ -90,47 +113,78 @@ describe('parseProfile', () => {
 });
 
 describe('resolveExecutionEnvironment', () => {
-  it('full-access is never sandboxed and says why', async () => {
-    const env = await resolveExecutionEnvironment({
-      cwd: '/work',
-      atlasHome: '/fakehome/.atlas',
-      profile: 'full-access',
-    });
-    expect(env.status.sandboxed).toBe(false);
-    expect(env.status.degradedReason).toContain('no sandbox');
-    // The warning must name the weakness rather than only the state.
-    expect(env.status.degradedReason).toContain('bypassable');
+  it('REFUSES full-access when the ceremony has not been performed', async () => {
+    // An env var or profile flag alone must not unlock a bare host shell.
+    const atlasHome = mkdtempSync(join(tmpdir(), 'atlas-nogrant-'));
+    try {
+      const env = await resolveExecutionEnvironment({
+        cwd: '/work',
+        atlasHome,
+        profile: 'full-access',
+      });
+      expect(env.status.backend).toBe('refusing');
+      expect(env.status.sandboxed).toBe(false);
+      expect(env.status.profile).toBe('read-only');
+      expect(env.status.networkEnabled).toBe(false);
+      expect(env.status.degradedReason).toContain('full access was requested');
+    } finally {
+      rmSync(atlasHome, { recursive: true, force: true });
+    }
   });
 
-  it('forceLocal never pretends to be sandboxed', async () => {
-    const env = await resolveExecutionEnvironment({
-      cwd: '/work',
-      atlasHome: '/fakehome/.atlas',
-      forceLocal: true,
-    });
-    expect(env.status.sandboxed).toBe(false);
-    expect(env.status.backend).toBe('local');
+  it('honours full-access once the grant exists, and says why it is weak', async () => {
+    const atlasHome = mkdtempSync(join(tmpdir(), 'atlas-grant-'));
+    try {
+      await enableFullAccess(atlasHome, 'I ACCEPT NO SANDBOX');
+      const env = await resolveExecutionEnvironment({
+        cwd: '/work',
+        atlasHome,
+        forceLocal: true,
+      });
+      expect(env.status.backend).toBe('local');
+      expect(env.status.sandboxed).toBe(false);
+      expect(env.status.degradedReason).toContain('no sandbox');
+      expect(env.status.degradedReason).toContain('bypassable');
+    } finally {
+      rmSync(atlasHome, { recursive: true, force: true });
+    }
+  });
+
+  it('REFUSES forceLocal when the grant is absent', async () => {
+    const atlasHome = mkdtempSync(join(tmpdir(), 'atlas-nogrant2-'));
+    try {
+      const env = await resolveExecutionEnvironment({
+        cwd: '/work',
+        atlasHome,
+        forceLocal: true,
+      });
+      expect(env.status.backend).toBe('refusing');
+    } finally {
+      rmSync(atlasHome, { recursive: true, force: true });
+    }
   });
 
   it('DEGRADES VISIBLY when a sandbox cannot be built', async () => {
-    // No working bubblewrap is reachable from a temp cwd on this host, so this
-    // exercises the catch path: the whole point is that it degrades AND says
-    // so, never that it quietly runs on the host.
-    const env = await resolveExecutionEnvironment({
-      cwd: mkdtempSync(join(tmpdir(), 'atlas-resolve-')),
-      atlasHome: '/fakehome/.atlas',
-      profile: 'read-only',
-    });
+    const cwd = mkdtempSync(join(tmpdir(), 'atlas-resolve-'));
+    const atlasHome = mkdtempSync(join(tmpdir(), 'atlas-resolve-home-'));
     try {
-      if (!env.status.sandboxed) {
-        expect(env.status.degradedReason).toBeDefined();
-        expect(env.describe()).toContain('dangerous commands will be refused');
-      }
-      // Whether or not this host can sandbox, the status must never claim
-      // confinement without a working backend.
-      if (env.status.sandboxed) expect(env.status.backend).toBe('bwrap');
+      const env = await resolveExecutionEnvironment({
+        cwd,
+        atlasHome,
+        profile: 'read-only',
+        // An injected path that is not executable forces the failure path on a
+        // host that DOES have bubblewrap, which is the interesting case.
+        bwrapPath: '/nonexistent/bwrap',
+      });
+      expect(env.status.sandboxed).toBe(false);
+      expect(env.status.backend).toBe('refusing');
+      expect(env.status.degradedReason).toBeDefined();
+      expect(env.describe()).toContain('refusing');
+      // Never the fail-open label.
+      expect(env.describe()).not.toContain('full-access');
     } finally {
-      rmSync(join(tmpdir(), 'atlas-resolve-'), { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(atlasHome, { recursive: true, force: true });
     }
   });
 });

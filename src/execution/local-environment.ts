@@ -1,10 +1,16 @@
 /**
  * The local backend: a host bash process, and nothing between it and the disk.
  *
- * Kept because it is what Atlas always did and because `full-access` needs
- * something to be. Every `ExecutionStatus` it produces says `sandboxed: false`,
- * and the caller is expected to say so out loud: an unsandboxed environment
- * that does not announce itself is the failure mode that matters.
+ * This is `full-access` and only `full-access`. It used to be the silent
+ * fallback when a sandbox could not be built, which meant a machine with no
+ * working bubblewrap ran every command on the host while the status bar said
+ * "full-access" as if the user had chosen it. It is now reachable only through
+ * the deliberate-friction ceremony (`full-access.ts`); an unavailable sandbox
+ * degrades to the refusing state instead.
+ *
+ * Every `ExecutionStatus` it produces says `sandboxed: false`, and the caller is
+ * expected to say so out loud: an unsandboxed environment that does not announce
+ * itself is the failure mode that matters.
  */
 
 import { ShellSession } from '../shell/shell-session.js';
@@ -18,7 +24,7 @@ import {
 } from './environment.js';
 
 export interface LocalEnvironmentOptions {
-  /** Why this backend was chosen, shown when it is degraded. */
+  /** Why this backend was chosen, shown whenever it is reported. */
   readonly degradedReason?: string | undefined;
   readonly profile?: ProtectionProfile | undefined;
   readonly networkEnabled?: boolean | undefined;
@@ -28,18 +34,21 @@ export interface LocalEnvironmentOptions {
 /**
  * The sentence the user sees when Atlas is running unsandboxed.
  *
- * Says what is true and what follows from it. "degraded" on its own would be a
+ * Says what is true AND what follows from it: not just "no sandbox", but that
+ * the remaining protection is a heuristic. "degraded" on its own would be a
  * word; the consequence is the information.
  */
-export const DEGRADED_MODE_NOTICE =
-  'sandbox unavailable: dangerous commands will be refused, not sandboxed.';
+export const FULL_ACCESS_NOTICE =
+  'full access: no sandbox. Commands run directly on this computer, and the ' +
+  'text-based safety checks are a best-effort heuristic that is known to be ' +
+  'bypassable.';
 
 export class LocalEnvironment implements ExecutionEnvironment {
   readonly status: ExecutionStatus;
 
   public constructor(options: LocalEnvironmentOptions = {}) {
     const reason =
-      options.degradedReason ?? DEGRADED_MODE_NOTICE;
+      options.degradedReason ?? FULL_ACCESS_NOTICE;
     this.status = {
       backend: 'local',
       // full-access, not workspace-write: this backend has no boundary, so

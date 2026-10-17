@@ -8,6 +8,8 @@ import type { ProtectionProfile } from '../execution/environment.js';
 
 import { describeCommand, planDryRun } from '../permissions/dry-run.js';
 import { hardFloorVerdict } from '../permissions/autonomy.js';
+import { positivelyReadOnly } from '../execution/read-only-clear.js';
+import { degradedRefusalMessage } from '../execution/refusing-environment.js';
 import type { RiskAssessment } from '../permissions/risk-classifier.js';
 import type { RiskClassifier } from '../permissions/risk-classifier.js';
 import type { PermissionGrantStore } from '../permissions/grant-store.js';
@@ -67,7 +69,7 @@ export interface ShellToolOptions {
    */
   sandbox?:
     | (() => {
-        backend: 'local' | 'bwrap';
+        backend: 'local' | 'bwrap' | 'refusing';
         profile: ProtectionProfile;
         writableRoots: string[];
         networkEnabled: boolean;
@@ -110,8 +112,6 @@ export class ShellTool implements ToolExecutor {
     (() => 'confirm-everything' | 'scoped-approval' | 'unattended') | undefined;
   #signal: AbortSignal | undefined;
   readonly #sandbox: (() => NonNullable<AuditEntryInput['sandbox']>) | undefined;
-  /** Set while a command is running outside the sandbox by explicit grant. */
-  #escalated = false;
 
   public constructor(options: ShellToolOptions) {
     this.#session = options.session;
@@ -133,9 +133,10 @@ export class ShellTool implements ToolExecutor {
   /**
    * The isolation context for the next audit row.
    *
-   * `escalated` is per-command, not per-session: a grant that ran one command
-   * outside the sandbox must not make the NEXT row claim the same, which is the
-   * same class of bug as the constant `gate_path` this replaced.
+   * `escalated` is always false because there is no escalation flow: nothing
+   * runs outside the profile the status reports. It stays a per-row field rather
+   * than a per-session constant so that a future flow cannot repeat the bug this
+   * replaced - a row claiming confinement it did not have.
    */
   #sandboxContext(): NonNullable<AuditEntryInput['sandbox']> | undefined {
     const current = this.#sandbox?.();
@@ -145,7 +146,7 @@ export class ShellTool implements ToolExecutor {
       profile: current.profile,
       writableRoots: [...current.writableRoots],
       networkEnabled: current.networkEnabled,
-      escalated: current.escalated || this.#escalated,
+      escalated: false,
     };
   }
 
@@ -175,13 +176,15 @@ export class ShellTool implements ToolExecutor {
    *   - refused without asking (block mode)  -> hard-block
    *   - nobody was asked, and a sandbox held -> auto-allow-sandboxed
    *   - nobody was asked, nothing confined   -> auto-allow
-   *   - it ran outside the sandbox by grant  -> escalated-out-of-sandbox
+   *
+   * `escalated-out-of-sandbox` is in the audit vocabulary but NOT produced here:
+   * there is no escalation flow, so nothing runs outside the profile. See the
+   * report's "not done" section.
    */
   #gatePathFor(outcome: {
     asked: boolean;
     denied?: boolean;
   }): GatePath {
-    if (this.#escalated) return 'escalated-out-of-sandbox';
     if (outcome.denied === true) {
       // A denial still has to name the path that produced it. Falling through
       // to the auto-allow branches below would put an ALLOW path on a row whose
@@ -193,32 +196,6 @@ export class ShellTool implements ToolExecutor {
     return this.#sandboxContext()?.backend === 'bwrap'
       ? 'auto-allow-sandboxed'
       : 'auto-allow';
-  }
-
-  /**
-   * Whether the command currently in flight is running outside the sandbox.
-   *
-   * Read by the audit writer, which cannot see the private flag, so the two
-   * columns that describe confinement cannot disagree.
-   *
-   * NOTE: nothing in the product calls {@link setEscalated} yet. The escalation
-   * PROMPT is not wired to a front-end; see the report's "not done" section.
-   * Until it is, `escalated` is always false and
-   * `escalated-out-of-sandbox` is unreachable in production - the audit
-   * vocabulary and the flag exist, the flow that would set them does not.
-   */
-  public isEscalated(): boolean {
-    return this.#escalated;
-  }
-
-  /**
-   * Marks subsequent commands as running outside the sandbox.
-   *
-   * Set by the escalation path, cleared as soon as the grant is spent, so the
-   * flag describes one command rather than the rest of the session.
-   */
-  public setEscalated(escalated: boolean): void {
-    this.#escalated = escalated;
   }
 
   /**
@@ -388,6 +365,40 @@ export class ShellTool implements ToolExecutor {
           'This action is permanently blocked by Atlas and was not executed.',
         isError: true,
       };
+    }
+
+    // No sandbox is available. Run only commands that are provably read-only;
+    // refuse everything else BEFORE asking, because the answer can only be no:
+    // the point is that Atlas will not run this command on the host at all.
+    //
+    // This is checked in the shell tool as well as in the refusing session so
+    // that the model and the user get a structured explanation rather than a
+    // bare exit code. The session is the backstop; this is the message.
+    const isolation = this.#sandboxContext();
+    if (isolation?.backend === 'refusing') {
+      const clear = positivelyReadOnly(command, cwd);
+      if (!clear.cleared) {
+        this.#auditLog.append({
+          timestamp,
+          command,
+          summary: `refused with no sandbox: ${clear.reason}`,
+          riskTier: assessment.tier,
+          matchedRule: assessment.matchedRule.id,
+          decision: 'blocked',
+          outcome: 'denied',
+          gatePath: 'refused-degraded',
+          autonomy: this.#autonomy?.() ?? 'confirm-everything',
+          ...this.#sandboxField(),
+          exitCode: null,
+          durationMs: null,
+        });
+        return {
+          content: degradedRefusalMessage(
+            `the environment is in the refusing state and this command is ${clear.reason}`,
+          ),
+          isError: true,
+        };
+      }
     }
 
     let approved = true;

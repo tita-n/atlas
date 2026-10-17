@@ -48,6 +48,13 @@ export const gatePathSchema = z.enum([
   'auto-allow-sandboxed',
   /** An explicit grant ran the command outside the sandbox. */
   'escalated-out-of-sandbox',
+  /**
+   * Refused because no sandbox was available and the command is not provably
+   * read-only. This is not `hard-block` (a configuration refusal) nor
+   * `denied-hard-floor` (the unconditional floor): it is the fail-closed
+   * degraded state declining to run an arbitrary command on the host.
+   */
+  'refused-degraded',
 ]);
 
 export type GatePath = z.infer<typeof gatePathSchema>;
@@ -110,7 +117,7 @@ export const auditEntryInputSchema = z
      */
     sandbox: z
       .object({
-        backend: z.enum(['local', 'bwrap']),
+        backend: z.enum(['local', 'bwrap', 'refusing']),
         profile: z.enum(['read-only', 'workspace-write', 'full-access']),
         writableRoots: z.array(z.string()),
         networkEnabled: z.boolean(),

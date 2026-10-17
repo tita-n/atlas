@@ -111,6 +111,66 @@ function build(opts: {
 }
 
 describe('truthful gate_path', () => {
+  it('a durable grant CANNOT skip the hard floor', async () => {
+    // The bug: a stored grant dropped a command to tier 0, which skipped
+    // review() - and review() was the only place the floor ran, so one
+    // remembered approval disabled the floor permanently. The floor is now
+    // evaluated in the shell tool, before the grant is consulted.
+    const rec: Recorded = { rows: [], ran: [] };
+    const audit = {
+      append(input: AuditEntryInput): AuditEntry {
+        const entry = {
+          eventKind: 'command',
+          summary: null,
+          gatePath: null,
+          autonomy: null,
+          sandbox: null,
+          ...input,
+          id: rec.rows.length + 1,
+        } as AuditEntry;
+        rec.rows.push(entry);
+        return entry;
+      },
+    };
+    // A grant that matches ANY command, including the floor command below. The
+    // command is chosen so the classifier really is talked down to tier 0 by
+    // the grant (`permission-grant`, `allow`): that is the only shape where the
+    // floor is the sole thing standing between the grant and the action.
+    const grant = {
+      id: '11111111-1111-4111-8111-111111111111',
+      executablePath: '/usr/bin/tee',
+      argv: [],
+      cwd: '/work',
+      createdAt: new Date().toISOString(),
+    };
+    const grantStore = {
+      match: () => grant,
+    };
+    const classifier = new RiskClassifier({
+      grantMatcher: grantStore,
+    });
+    const command = "echo '{}' > ~/.atlas/permissions.json";
+    // Preconditions, asserted so the test cannot pass for the wrong reason: the
+    // classifier ALLOWS it because of the grant, and only the floor objects.
+    expect(classifier.assess(command, '/work').decision).toBe('allow');
+    expect(classifier.assess(command, '/work').tier).toBe(0);
+    const tool = new ShellTool({
+      session: session(rec.ran),
+      classifier,
+      confirmation: gate(true, false),
+      auditLog: audit as unknown as AuditLog,
+      grantStore: grantStore as never,
+      sandbox: sandbox('bwrap'),
+    });
+
+    const result = await tool.execute(call(command));
+    expect(rec.ran).toEqual([]);
+    expect(rec.rows[0]?.decision).toBe('blocked');
+    expect(rec.rows[0]?.outcome).toBe('denied');
+    expect(rec.rows[0]?.gatePath).toBe('denied-hard-floor');
+    expect(result.isError).toBe(true);
+  });
+
   it('records asked-approved only when a human was actually asked', async () => {
     const { tool, rec } = build({
       approved: true,
@@ -167,19 +227,20 @@ describe('truthful gate_path', () => {
     expect(rec.rows[0]?.sandbox?.escalated).toBe(false);
   });
 
-  it('clears the escalated flag between commands', async () => {
-    // A grant that ran ONE command outside the sandbox must not make the
-    // NEXT row claim the same.
+  it('never claims an escape: every row records escalated=false', async () => {
+    // There is no escalation flow, so nothing runs outside the profile the
+    // status reports and no row may say otherwise. `escalated-out-of-sandbox`
+    // is reserved vocabulary, not a produced value.
     const { tool, rec } = build({
       approved: true,
       confirmationRequested: false,
     });
-    tool.setEscalated(true);
     await tool.execute(call('echo one'));
-    tool.setEscalated(false);
     await tool.execute(call('echo two'));
-    expect(rec.rows[0]?.gatePath).toBe('escalated-out-of-sandbox');
-    expect(rec.rows[1]?.gatePath).toBe('auto-allow-sandboxed');
+    expect(rec.rows.map((row) => row.sandbox?.escalated)).toEqual([false, false]);
+    expect(rec.rows.map((row) => row.gatePath)).not.toContain(
+      'escalated-out-of-sandbox',
+    );
   });
 
   it('records a real user denial on the path that asked', async () => {

@@ -38,6 +38,8 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
+import type { ProtectionProfile } from './environment.js';
+
 /** One directory the user has agreed to let Atlas write in. */
 export interface TrustedDirectory {
   /** Canonical absolute path. Symlinks are resolved before storage. */
@@ -217,4 +219,23 @@ export async function forgetTrust(
 export function parentOf(canonicalPath: string): string | undefined {
   const parent = dirname(canonicalPath);
   return parent === canonicalPath ? undefined : parent;
+}
+
+/**
+ * The profile a directory should start in.
+ *
+ * An untrusted directory starts `read-only`. This is the default that makes
+ * `workspace-write` a decision rather than an accident: opening Atlas somewhere
+ * new must not hand a model write access to it before anyone agreed.
+ *
+ * This lives here rather than in an `escalation.ts` because it is the trust
+ * record - not an escalation - that decides the starting profile. There is no
+ * escalation flow in the product (see the report's "not done" section): no code
+ * path asks for an extra writable root, more network, or a sandbox-free run, so
+ * the whole decision machinery that would have served one was removed rather
+ * than left as code that silently does nothing. Widening access is done
+ * deliberately with `atlas trust add`, `--sandbox-profile`, or `--full-access`.
+ */
+export function initialProfile(trusted: boolean): ProtectionProfile {
+  return trusted ? 'workspace-write' : 'read-only';
 }

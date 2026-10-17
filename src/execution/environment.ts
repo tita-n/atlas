@@ -58,8 +58,18 @@ export function parseProfile(
   );
 }
 
-/** What kind of isolation is actually active. */
-export type ExecutionBackend = 'local' | 'bwrap';
+/**
+ * What kind of isolation is actually active.
+ *
+ *   - `bwrap`    a real kernel sandbox.
+ *   - `refusing` no sandbox is available, so only provably read-only commands
+ *                run and everything else is refused. This is the fail-closed
+ *                state: it gives up usefulness, never safety.
+ *   - `local`    a host shell with no boundary at all. Reachable ONLY through
+ *                the explicit full-access ceremony, never as a silent fallback
+ *                from an unavailable sandbox.
+ */
+export type ExecutionBackend = 'local' | 'bwrap' | 'refusing';
 
 /**
  * A single line describing the protection in force.
@@ -146,7 +156,12 @@ export function confinesFilesystem(
  */
 export function describeStatus(status: ExecutionStatus): string {
   const parts: string[] = [];
-  if (!status.sandboxed) {
+  if (status.backend === 'refusing') {
+    // A distinct word, not "SANDBOX OFF": this state does not run arbitrary
+    // commands on the host, it refuses them. Calling it the same thing as
+    // full-access would hide the one fact the user needs.
+    parts.push('SANDBOX UNAVAILABLE (refusing, degraded)');
+  } else if (!status.sandboxed) {
     parts.push(`SANDBOX OFF (${status.backend}, degraded)`);
   } else {
     parts.push(`sandbox: ${status.backend}`);

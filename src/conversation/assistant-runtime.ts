@@ -40,7 +40,7 @@ import { FactExtractor } from '../memory/fact-extractor.js';
 import { CorrectionExtractor } from '../memory/correction-extractor.js';
 import { AuditLog } from '../audit/audit-log.js';
 import { resolveExecutionEnvironment } from '../execution/resolve-environment.js';
-import { initialProfile } from '../execution/escalation.js';
+import { initialProfile } from '../execution/trust.js';
 import type { ProtectionProfile } from '../execution/environment.js';
 import { parseProfile } from '../execution/environment.js';
 import { isTrusted } from '../execution/trust.js';
@@ -372,17 +372,22 @@ export async function createAssistantRuntime(
       // "was this confined at the time?", which is the only question it is
       // worth asking after an escape.
       //
-      // `escalated` is NOT derived from the profile. Under `full-access` there
-      // is no implied sandbox, so nothing was escalated: the user chose that
-      // profile for the whole session. Deriving it from the profile stamped
-      // `escalated = 1` on every row while `gate_path` said `auto-allow`, so
-      // the two most reviewable columns contradicted each other.
+      // `escalated` is always false, and that is not a placeholder: there is no
+      // escalation flow in the product. Nothing asks for an extra writable root,
+      // more network, or a sandbox-free run, so nothing ever runs outside the
+      // profile the status reports. It is NOT derived from the profile either -
+      // under `full-access` the user chose that for the whole session, so
+      // nothing was escalated; deriving it from the profile stamped
+      // `escalated = 1` on every row while `gate_path` said `auto-allow`, and
+      // the two most reviewable columns contradicted each other. The column and
+      // the `escalated-out-of-sandbox` vocabulary are reserved for a real flow;
+      // see the report.
       sandbox: () => ({
         backend: status.backend,
         profile: status.profile,
         writableRoots: [...status.writableRoots],
         networkEnabled: status.networkEnabled,
-        escalated: shellTool.isEscalated(),
+        escalated: false,
       }),
       // Records which gate approved a dangerous command, so the interim
       // typed-safe-word period is reviewable after the fact.

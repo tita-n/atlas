@@ -3,7 +3,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { buildBwrapCommand, sandboxEnv, SANDBOXED_SHELL } from '../../src/execution/bwrap/mount-policy.js';
+import {
+  assertHomeAllowlist,
+  auditHomeExposure,
+  buildBwrapCommand,
+  sandboxEnv,
+  SANDBOXED_SHELL,
+} from '../../src/execution/bwrap/mount-policy.js';
+import { contains } from '../../src/safety/protected-targets.js';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -316,6 +323,125 @@ describe('hidden paths', () => {
       expect(Array.isArray(built.hiddenPaths)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('home exposure allow list', () => {
+  /** Point the policy's home at a disposable fixture and restore afterwards. */
+  function withHome<T>(home: string, run: () => T): T {
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return run();
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+    }
+  }
+
+  it('exposes nothing under $HOME except the trusted workspace and its pins', () => {
+    const home = mkdtempSync(join(tmpdir(), 'atlas-hex-'));
+    const cwd = join(home, 'proj');
+    const atlasHome = join(home, '.atlas');
+    mkdirSync(join(cwd, '.git', 'hooks'), { recursive: true });
+    mkdirSync(atlasHome, { recursive: true });
+    mkdirSync(join(home, '.ssh'), { recursive: true });
+    writeFileSync(join(cwd, '.git', 'config'), '[core]\n');
+    writeFileSync(join(cwd, '.git', 'hooks', 'pre-commit'), 'x');
+    writeFileSync(join(atlasHome, 'config.json'), '{"apiKey":"secret"}');
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), 'secret');
+    try {
+      withHome(home, () => {
+        const built = buildBwrapCommand(
+          policy({ cwd, writableRoots: [cwd], atlasHome }),
+          '/usr/bin/bwrap',
+          ['/bin/true'],
+        );
+        const audit = auditHomeExposure(cwd, [cwd], built.argv);
+        expect(audit.home).toBe(home);
+        // The invisible side: the secret dot-dirs the mask pass replaces with
+        // an unreadable tmpfs, plus the empty /home tmpfs backing store.
+        const maskedPaths = audit.invisible.map((m) => m.path);
+        expect(maskedPaths).toContain(join(home, '.ssh'));
+        expect(maskedPaths).toContain(atlasHome);
+        // The visible side: only the workspace (and pins INSIDE it) may show
+        // host content under $HOME.
+        expect(audit.exposed.length).toBeGreaterThan(0);
+        for (const { mount, trusted } of audit.exposed) {
+          expect(
+            trusted,
+            `untrusted under-home mount in argv: ${JSON.stringify(mount)}`,
+          ).toBe(true);
+        }
+        for (const { mount } of audit.exposed) {
+          expect(
+            contains(cwd, mount.path) || contains(cwd, mount.source ?? ''),
+            `under-home mount outside the workspace: ${JSON.stringify(mount)}`,
+          ).toBe(true);
+        }
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unapproved bind under $HOME at argv-build time', () => {
+    const home = mkdtempSync(join(tmpdir(), 'atlas-hex2-'));
+    mkdirSync(join(home, '.aws'), { recursive: true });
+    try {
+      // The home the policy masks against is the runner's HOME, which inside
+      // the test is the disposable fixture, so the fixture's .aws really is
+      // "under the home directory" for this call.
+      withHome(home, () => {
+        expect(() => {
+          assertHomeAllowlist(
+            '/work',
+            ['/work'],
+            ['--ro-bind', join(home, '.aws'), join(home, '.aws')],
+          );
+        }).toThrow(/unapproved (mount|source) under the home directory/);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('a mount FROM an under-home secret out to a trusted path is refused', () => {
+    const home = mkdtempSync(join(tmpdir(), 'atlas-hex3-'));
+    mkdirSync(join(home, '.gnupg'), { recursive: true });
+    try {
+      withHome(home, () => {
+        expect(() => {
+          assertHomeAllowlist('/work', ['/work'], [
+            '--ro-bind',
+            join(home, '.gnupg'),
+            '/work/gnupg-mirror',
+          ]);
+        }).toThrow(/unapproved source under the home directory/);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('masks the standard secret directories relative to the sandbox HOME', () => {
+    const home = mkdtempSync(join(tmpdir(), 'atlas-hex4-'));
+    for (const dir of ['.ssh', '.aws', '.mozilla']) mkdirSync(join(home, dir));
+    try {
+      withHome(home, () => {
+        const argv = args(policy());
+        for (const dir of ['.ssh', '.aws', '.mozilla']) {
+          const index = argv.indexOf(join(home, dir));
+          expect(index, `mask expected for ${dir}`).toBeGreaterThan(-1);
+          // argv shape: --perms 000 --tmpfs PATH --remount-ro PATH
+          expect(argv[index - 3]).toBe('--perms');
+          expect(argv[index - 2]).toBe('000');
+          expect(argv[index - 1]).toBe('--tmpfs');
+        }
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

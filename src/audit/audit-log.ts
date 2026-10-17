@@ -19,7 +19,7 @@ interface AuditRow {
   summary: string | null;
   gate_path: GatePath | null;
   autonomy: 'confirm-everything' | 'scoped-approval' | 'unattended' | null;
-  sandbox_backend: 'local' | 'bwrap' | null;
+  sandbox_backend: 'local' | 'bwrap' | 'refusing' | null;
   sandbox_profile: 'read-only' | 'workspace-write' | 'full-access' | null;
   sandbox_writable_roots: string | null;
   sandbox_network: 0 | 1 | null;

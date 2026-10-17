@@ -96,6 +96,12 @@ export class BwrapEnvironment implements ExecutionEnvironment {
    * run unsandboxed is a decision for `resolveExecutionEnvironment`, which can
    * see the whole picture and say so out loud. A backend that quietly ran on
    * the host would be the exact failure this whole design is meant to remove.
+   *
+   * Before returning, the sandbox is checked FROM INSIDE (see
+   * {@link verifyIsolation}). A sandbox whose isolation could not be confirmed
+   * is not handed to a caller at all - it throws, and the resolver turns that
+   * into the visible refusing state. "We think it is confined" is not a
+   * guarantee; the confirmation is.
    */
   public static async create(
     options: BwrapEnvironmentOptions,
@@ -121,20 +127,40 @@ export class BwrapEnvironment implements ExecutionEnvironment {
         ? (options.writableRoots ?? [options.cwd])
         : [];
 
-    return new BwrapEnvironment(
-      {
-        profile: options.profile,
-        cwd: options.cwd,
-        writableRoots,
-        networkEnabled: options.networkEnabled ?? false,
-        atlasHome: options.atlasHome,
-        alwaysHidden: options.alwaysHidden ?? [],
-      },
+    const policy: MountPolicy = {
+      profile: options.profile,
+      cwd: options.cwd,
+      writableRoots,
+      networkEnabled: options.networkEnabled ?? false,
+      atlasHome: options.atlasHome,
+      alwaysHidden: options.alwaysHidden ?? [],
+    };
+
+    // The production caller for the isolation self-check. This is the step the
+    // previous version left as a probe with no caller, so its claim was "this
+    // is checkable" rather than "this was checked". Now every sandbox session
+    // is checked before it runs a single command, and a mismatch is a hard
+    // refusal with the reason.
+    const isolation = await verifySandboxIsolation(
+      policy,
+      resolution.path,
+      defaultRunner,
+    );
+    if (!isolation.ok) {
+      throw new BwrapUnavailableError(
+        `sandbox isolation could not be confirmed, so Atlas will not use it: ${isolation.detail}`,
+      );
+    }
+
+    const environment = new BwrapEnvironment(
+      policy,
       resolution.path,
       options.cwd,
       options.networkEnabled ?? false,
       writableRoots,
     );
+    environment.#noNewPrivsVerified = true;
+    return environment;
   }
 
   public describe(): string {
@@ -161,41 +187,160 @@ export class BwrapEnvironment implements ExecutionEnvironment {
   }
 
   /**
-   * Verifies from inside the sandbox that no_new_privs is really set.
+   * Verifies from inside the sandbox that the confinement it claims is real.
    *
-   * Bubblewrap sets it when it creates a user namespace, but that is a claim
-   * about behaviour, and `setuid` builds may differ. An unverified claim is not
-   * a security property, so the check runs once and its result is reported.
+   * Bubblewrap sets NoNewPrivs when it creates a user namespace, drops caps and
+   * mounts the masks, but that is a claim about behaviour, and `setuid` builds
+   * or a different kernel may differ. An unverified claim is not a security
+   * property. This runs the check and reports each result.
    */
-  public async verifyIsolation(): Promise<{
-    ok: boolean;
-    detail: string;
-  }> {
-    const probeCommand = [
-      '/bin/sh',
-      '-c',
-      'grep -q "^NoNewPrivs:\\s*1" /proc/self/status && echo NNP_OK || echo NNP_MISSING',
-    ];
-    const built = buildBwrapCommand(
+  public async verifyIsolation(): Promise<IsolationReport> {
+    const report = await verifySandboxIsolation(
       this.#policy,
       this.#bwrapPath,
-      probeCommand,
+      defaultRunner,
     );
-    const result = await defaultRunner(built.argv);
-    const ok = result.stdout.includes('NNP_OK');
-    this.#noNewPrivsVerified = ok;
-    return {
-      ok,
-      detail: ok
-        ? 'NoNewPrivs: 1 confirmed from inside the sandbox'
-        : 'sandbox did not report NoNewPrivs=1; isolation is NOT as assumed',
-    };
+    this.#noNewPrivsVerified = report.ok;
+    return report;
   }
 
   /** Whether the isolation self-check has passed in this session. */
   public get isolationVerified(): boolean {
     return this.#noNewPrivsVerified;
   }
+}
+
+/** One property checked from inside the sandbox. */
+export interface IsolationCheck {
+  readonly name: string;
+  readonly ok: boolean;
+  readonly detail: string;
+}
+
+export interface IsolationReport {
+  readonly ok: boolean;
+  readonly detail: string;
+  readonly checks: readonly IsolationCheck[];
+}
+
+export type IsolationRunner = (
+  argv: readonly string[],
+) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+
+/**
+ * Runs the isolation self-check from INSIDE a sandbox built by `policy`.
+ *
+ * One bwrap invocation runs a POSIX `sh` script that reports four facts:
+ *
+ *   1. `NoNewPrivs: 1` in `/proc/self/status`.
+ *   2. `CapEff` is all zero (no effective capabilities).
+ *   3. The sandbox root is not writable (`touch /...` fails).
+ *   4. Every path the policy masked is unreadable (`ls` on it fails).
+ *
+ * A missing or truncated report is a FAILURE, not a pass: if the script did not
+ * complete we learned nothing, and "we learned nothing" must not be reported as
+ * "isolated". The caller turns any failure into a refusal to run.
+ */
+export async function verifySandboxIsolation(
+  policy: MountPolicy,
+  bwrapPath: string,
+  runner: IsolationRunner,
+): Promise<IsolationReport> {
+  // The mask list is deterministic given the policy, so a cheap build tells us
+  // exactly which paths to check. Any command works for this read.
+  const maskedPaths = buildBwrapCommand(policy, bwrapPath, ['/bin/true'])
+    .maskedPaths;
+  const script = isolationScript(maskedPaths);
+  const built = buildBwrapCommand(policy, bwrapPath, [
+    '/bin/sh',
+    '-c',
+    script,
+  ]);
+  const result = await runner(built.argv);
+  return interpretIsolation(result.stdout, maskedPaths);
+}
+
+/** The POSIX script the in-sandbox check runs. Kept tiny and dependency-free. */
+function isolationScript(maskedPaths: readonly string[]): string {
+  const quoted = maskedPaths
+    .map((path) => `'${path.replace(/'/g, `'\\''`)}'`)
+    .join(' ');
+  return [
+    'printf "NNP=%s\\n" "$(grep -c \'^NoNewPrivs:[[:space:]]*1\' /proc/self/status)"',
+    'printf "CAPEFF=%s\\n" "$(awk \'/^CapEff:/{print $2}\' /proc/self/status)"',
+    'if touch /atlas-isolation-probe 2>/dev/null; then echo ROOTRW=1; else echo ROOTRW=0; fi',
+    `for p in ${quoted}; do if [ -e "$p" ] && ls "$p" >/dev/null 2>&1; then printf "MASKLEAK=%s\\n" "$p"; fi; done`,
+    'echo CHECK_DONE',
+  ].join('\n');
+}
+
+/** Turns raw probe output into per-property verdicts. Absence of proof fails. */
+export function interpretIsolation(
+  stdout: string,
+  maskedPaths: readonly string[],
+): IsolationReport {
+  const lines = stdout.split('\n').map((line) => line.trim());
+  const value = (key: string): string | undefined =>
+    lines.find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1);
+
+  const completed = lines.includes('CHECK_DONE');
+  const nnp = value('NNP');
+  const capEff = value('CAPEFF');
+  const rootRw = value('ROOTRW');
+  const leaks = lines.filter((line) => line.startsWith('MASKLEAK='));
+
+  const capsZero = capEff !== undefined && /^0+$/.test(capEff);
+  const checks: IsolationCheck[] = [
+    {
+      name: 'no-new-privs',
+      ok: nnp === '1',
+      detail:
+        nnp === '1'
+          ? 'NoNewPrivs: 1'
+          : `NoNewPrivs not set (saw ${nnp ?? 'nothing'})`,
+    },
+    {
+      name: 'capabilities-dropped',
+      ok: capsZero,
+      detail: capsZero
+        ? 'CapEff all zero'
+        : `CapEff not empty (saw ${capEff ?? 'nothing'})`,
+    },
+    {
+      name: 'root-read-only',
+      ok: rootRw === '0',
+      detail:
+        rootRw === '0'
+          ? 'sandbox root is not writable'
+          : `sandbox root was writable (saw ROOTRW=${rootRw ?? 'nothing'})`,
+    },
+    {
+      name: 'masks-present',
+      ok: completed && leaks.length === 0,
+      detail:
+        !completed
+          ? 'mask check did not complete'
+          : leaks.length === 0
+            ? `${String(maskedPaths.length)} masked path(s) unreadable`
+            : `masked path still readable: ${leaks
+                .map((line) => line.slice('MASKLEAK='.length))
+                .join(', ')}`,
+    },
+  ];
+
+  const ok = completed && checks.every((check) => check.ok);
+  if (ok) {
+    return {
+      ok: true,
+      detail: 'all isolation checks passed from inside the sandbox',
+      checks,
+    };
+  }
+  const failed = checks.filter((check) => !check.ok);
+  const detail = completed
+    ? failed.map((check) => `${check.name}: ${check.detail}`).join('; ')
+    : 'the in-sandbox check did not finish; isolation is unproven';
+  return { ok: false, detail, checks };
 }
 
 async function defaultRunner(

@@ -113,10 +113,19 @@ export interface BwrapCommand {
    * This conflates two different guarantees: the explicit masks (real tmpfs
    * mounts, invisible) and the protected subpaths (re-bound `--ro-bind`, which
    * is tamper-proof but still readable). A caller that renders this must say
-   * "hidden or read-only", not "hidden". Recorded for diagnostics; nothing
-   * consumes it in production today.
+   * "hidden or read-only", not "hidden". Recorded for diagnostics. Use
+   * {@link BwrapCommand.maskedPaths} when you need the stronger claim.
    */
   readonly hiddenPaths: readonly string[];
+  /**
+   * Paths replaced by an empty, unreadable tmpfs (`--perms 000 --tmpfs ...`).
+   *
+   * These are genuinely INVISIBLE, not read-only-pinned: nothing inside can
+   * read them even as the mapped user, because the mode and the dropped
+   * capabilities both forbid it. This is the list the isolation self-check
+   * verifies from inside the sandbox.
+   */
+  readonly maskedPaths: readonly string[];
 }
 
 /**
@@ -165,6 +174,28 @@ export function sandboxEnv(
   env.PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
   env.HOME = env.HOME ?? '/tmp/atlas-home';
   return env;
+}
+
+/**
+ * Binds an already-writable path back read-only, as a literal bind instead of
+ * bind+symlink.
+ *
+ * `bindReadable` is designed for mounting a host path that may be a symlink
+ * into the empty root, and when the target is a symlink it emits
+ * `--ro-bind <real> <real>` plus `--symlink <real> <path>`. That is correct
+ * there, but wrong inside a writable root: the real target already has a mount
+ * entry from `--bind <root> <root>`, and a second read-only bind of the same
+ * real path does not cover `root`, so writing through `root/<path>` still
+ * reaches the writable bind underneath. For protected subpaths the symlink is
+ * also not needed - the file has never been reachable by any other spelling -
+ * so protecting it is a single literal `--ro-bind <path> <path>`.
+ */
+function bindWritableAsRo(args: string[], rawPath: string): void {
+  // Literal about the LOOKUP, not about cosmetic spelling: directory targets
+  // in the protected lists carry a trailing slash (`dist/`), and keeping it
+  // would make the argv un-greppable against its own path list for no benefit.
+  const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
+  args.push('--ro-bind', path, path);
 }
 
 /**
@@ -281,7 +312,7 @@ export function buildBwrapCommand(
   const hiddenPaths: string[] = [];
   for (const root of writableRoots) {
     for (const target of protectedSubpathsIn(resolve(root), policy)) {
-      bindReadable(args, '--ro-bind', target);
+      bindWritableAsRo(args, target);
       hiddenPaths.push(target);
     }
   }
@@ -321,6 +352,13 @@ export function buildBwrapCommand(
   args.push('--clearenv');
   // Nothing outside a writable root may be written, and /home is not one.
   args.push('--remount-ro', '/home');
+  // The sandbox root itself is a private tmpfs, so writing there did not touch
+  // the host - but it made `touch /x` succeed, which reads as "the root is
+  // writable" and hides the real boundary from any check that looks for one.
+  // Remount it read-only AFTER every mount point has been created (binding into
+  // a read-only root would fail), so the writable children - the workspace bind
+  // and the /tmp and /var/tmp tmpfs mounts - are unaffected.
+  args.push('--remount-ro', '/');
   for (const [name, value] of Object.entries(sandboxEnv())) {
     args.push('--setenv', name, value);
   }
@@ -329,7 +367,11 @@ export function buildBwrapCommand(
   args.push('--');
   args.push(...command);
 
-  return { argv: args, hiddenPaths };
+  // Enforce the home allowlist on the FINISHED argv, so any future change that
+  // mounts user data under $HOME fails the build loudly instead of shipping.
+  assertHomeAllowlist(cwd, writableRoots, args);
+
+  return { argv: args, hiddenPaths, maskedPaths: masked };
 }
 
 /**
@@ -366,3 +408,147 @@ export const SANDBOXED_SHELL: readonly string[] = [
   '--noprofile',
   '--norc',
 ];
+
+/**
+ * One filesystem mount inside a built bwrap argv, as the home audit sees it.
+ *
+ * `mask` is a `--perms 000 --tmpfs` replacement (host content invisible);
+ * `tmpfs` is any other fresh empty mount (`--tmpfs /`, `/tmp`, `/var/tmp`,
+ * `/home`), which likewise carries no host content; `bind-read` and
+ * `bind-write` expose host content; `symlink` points at it.
+ */
+export type HomeMountKind = 'mask' | 'tmpfs' | 'bind-read' | 'bind-write' | 'symlink';
+
+export interface HomeMount {
+  readonly kind: HomeMountKind;
+  /** Bind/symlink source; absent for fresh mounts and masks. */
+  readonly source?: string | undefined;
+  /** Where it lands inside the sandbox. */
+  readonly path: string;
+}
+
+/** Reads the mount-shaped flags out of a bwrap argv, in order. */
+export function parseMounts(argv: readonly string[]): HomeMount[] {
+  const mounts: HomeMount[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === '--perms' && argv[i + 1] === '000' && argv[i + 2] === '--tmpfs') {
+      mounts.push({ kind: 'mask', path: argv[i + 3] ?? '' });
+      i += 3;
+      continue;
+    }
+    if (flag === '--bind') {
+      mounts.push({ kind: 'bind-write', source: argv[i + 1], path: argv[i + 2] ?? '' });
+      i += 2;
+      continue;
+    }
+    if (flag === '--ro-bind') {
+      mounts.push({ kind: 'bind-read', source: argv[i + 1], path: argv[i + 2] ?? '' });
+      i += 2;
+      continue;
+    }
+    if (flag === '--symlink') {
+      mounts.push({ kind: 'symlink', source: argv[i + 1], path: argv[i + 2] ?? '' });
+      i += 2;
+      continue;
+    }
+    if (flag === '--tmpfs') {
+      mounts.push({ kind: 'tmpfs', path: argv[i + 1] ?? '' });
+      i += 1;
+      continue;
+    }
+  }
+  return mounts;
+}
+
+/**
+ * The home allowlist, ENFORCED rather than assumed.
+ *
+ * The policy starts from an empty root, so `$HOME` is not mounted at all; that
+ * is a shape of the code, not a promise of it. A future edit - a convenience
+ * bind of `~/.cache`, a "helpful" home bind for dotfiles, a broadened readable
+ * root - could silently put user data back into view. This check walks the
+ * finished argv and refuses EVERY mount under the home directory that is not
+ * one of exactly three things:
+ *
+ *   1. a fresh mount or `--perms 000` mask (host content invisible),
+ *   2. a mount whose destination (and source) sits in the trusted workspace -
+ *      the one directory the user chose to open - including the read-only pins
+ *      of protected subpaths inside it,
+ *   3. a mount inside one of the caller-granted writable roots (an explicit,
+ *      audited grant, never a default).
+ *
+ * Anything else fails the build. The allow list is therefore a property of the
+ * command that ships, not of the code path that happens to run today.
+ */
+export function assertHomeAllowlist(
+  cwd: string,
+  writableRoots: readonly string[],
+  argv: readonly string[],
+): void {
+  const userHome = resolve(process.env.HOME ?? '/root');
+  // A home of '/' would classify every path as in-home; the sandbox refusal
+  // checks above already handle a host-root situation for cwd and writable
+  // roots, so this pass simply sits out that degenerate case.
+  if (userHome === '/') return;
+  const trustedRoots = [resolve(cwd), ...writableRoots.map((root) => resolve(root))];
+  const trusted = (path: string) => trustedRoots.some((root) => contains(root, path));
+  const inHome = (path: string): boolean =>
+    path !== '' && path !== userHome && contains(userHome, path);
+
+  for (const mount of parseMounts(argv)) {
+    if (mount.kind === 'mask' || mount.kind === 'tmpfs') continue;
+    // A symlink whose target is home data and whose landing spot is not is
+    // still an escape route when the landing spot is reachable; judge both.
+    if (mount.source !== undefined && inHome(mount.source) && !trusted(mount.source)) {
+      throw new Error(
+        `refusing an unapproved source under the home directory: ${mount.source} -> ${mount.path} (${mount.kind})`,
+      );
+    }
+    if (inHome(mount.path) && !trusted(mount.path) && !trusted(mount.source ?? '')) {
+      throw new Error(
+        `refusing an unapproved mount under the home directory: ${mount.source ?? ''} -> ${mount.path} (${mount.kind}). Nothing under $HOME enters the sandbox except the trusted workspace and fresh invisible mounts.`,
+      );
+    }
+  }
+}
+
+/**
+ * The home exposure of one built command, for audit output.
+ *
+ * Everything under `$HOME` is split into invisible fresh mounts/masks and
+ * mounts that actually expose host content, each tagged with whether it is
+ * inside the trusted workspace. A well-formed command has every exposed entry
+ * tagged trusted, and this is what the runtime and the report check.
+ */
+export interface HomeExposure {
+  readonly home: string;
+  readonly invisible: readonly HomeMount[];
+  readonly exposed: readonly { mount: HomeMount; trusted: boolean }[];
+}
+
+export function auditHomeExposure(
+  cwd: string,
+  writableRoots: readonly string[],
+  argv: readonly string[],
+): HomeExposure {
+  const mounts = parseMounts(argv);
+  const userHome = resolve(process.env.HOME ?? '/root');
+  const trustedRoots = [resolve(cwd), ...writableRoots.map((root) => resolve(root))];
+  const trusted = (path: string) => trustedRoots.some((root) => contains(root, path));
+  const invisible: HomeMount[] = [];
+  const exposed: { mount: HomeMount; trusted: boolean }[] = [];
+  for (const mount of mounts) {
+    const underHome =
+      mount.path !== userHome && mount.path !== '' && contains(userHome, mount.path);
+    if (!underHome && !(mount.source !== undefined && contains(userHome, mount.source))) {
+      continue;
+    }
+    if (mount.kind === 'mask' || mount.kind === 'tmpfs') {
+      invisible.push(mount);
+      continue;
+    }
+    exposed.push({ mount, trusted: trusted(mount.path) || trusted(mount.source ?? '') });
+  }
+  return { home: userHome, invisible, exposed };
+}
