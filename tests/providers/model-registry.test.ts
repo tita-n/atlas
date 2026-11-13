@@ -5,13 +5,14 @@
  * down.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   ATLAS_PROTOCOLS,
+  DEFAULT_TIMEOUT_MS,
   MODELS_DEV_URL,
   detectProviders,
   findModel,
@@ -21,6 +22,7 @@ import {
   parseModel,
   parseRegistry,
   protocolFor,
+  readBundledCache,
   refreshRegistry,
   type ProviderInfo,
 } from '../../src/providers/model-registry.js';
@@ -353,6 +355,109 @@ describe('caching and refresh', () => {
 
   it('points at the documented endpoint by default', () => {
     expect(MODELS_DEV_URL).toBe('https://models.dev/api.json');
+  });
+});
+
+describe('bundled catalogue', () => {
+  it('seeds an empty home so a first run opens on a list', async () => {
+    // The regression this exists for: a fresh install with no cache used to
+    // show an empty picker whenever the network was slow. The shipped copy is
+    // the list, and it lands on disk so the next start reads an ordinary
+    // cache.
+    const home = await tempHome();
+    const result = await loadRegistry({
+      atlasHome: home,
+      fetchImpl: vi.fn(() => Promise.reject(new Error('offline'))),
+      bundledCache: { fetchedAt: Date.now(), payload: fixture() },
+    });
+    expect(result.snapshot.providers).toHaveLength(3);
+    expect(result.snapshot.source).toBe('cache');
+    const onDisk = JSON.parse(
+      await readFile(join(home, 'models.dev.json'), 'utf8'),
+    ) as { payload: object };
+    expect(Object.keys(onDisk.payload)).toContain('acme');
+  });
+
+  it('treats a bundled copy older than the TTL as stale', async () => {
+    const home = await tempHome();
+    const fetchImpl = vi.fn(() => Promise.resolve(jsonResponse(fixture())));
+    const result = await loadRegistry({
+      atlasHome: home,
+      fetchImpl,
+      bundledCache: { fetchedAt: 0, payload: fixture() },
+      ttlMs: 0,
+    });
+    expect(result.snapshot.providers).toHaveLength(3);
+    expect(result.stale).toBe(true);
+    expect(result.refreshing).toBeDefined();
+    await result.refreshing;
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed refresh through refreshing, not a premature claim', async () => {
+    const home = await tempHome();
+    const result = await loadRegistry({
+      atlasHome: home,
+      fetchImpl: () => Promise.reject(new Error('offline')),
+      bundledCache: { fetchedAt: 0, payload: fixture() },
+      ttlMs: 0,
+    });
+    // The caller keeps the full list and learns the truth only after the
+    // attempt has actually failed.
+    expect(result.snapshot.providers).toHaveLength(3);
+    expect(result.stale).toBe(true);
+    await expect(result.refreshing).resolves.toBeUndefined();
+  });
+
+  it('resolves refreshing with the new catalogue when the update lands', async () => {
+    const home = await tempHome();
+    const result = await loadRegistry({
+      atlasHome: home,
+      fetchImpl: () => Promise.resolve(jsonResponse(fixture())),
+      bundledCache: { fetchedAt: 0, payload: fixture() },
+      ttlMs: 0,
+    });
+    const refreshed = await result.refreshing;
+    expect(refreshed?.providers).toHaveLength(3);
+    expect(refreshed?.fetchedAt).toBeGreaterThan(0);
+  });
+
+  it('never lets an empty payload overwrite the list on disk', async () => {
+    // A 200 whose body parses but yields no usable model is a schema change
+    // or a placeholder page. Writing it would be the "file overwrites
+    // everything" failure: the list on disk would go from 235 providers to 0.
+    const home = await tempHome();
+    await loadRegistry({
+      atlasHome: home,
+      fetchImpl: () => Promise.resolve(jsonResponse(fixture())),
+    });
+    const before = await readFile(join(home, 'models.dev.json'), 'utf8');
+    const result = await loadRegistry({
+      atlasHome: home,
+      fetchImpl: () => Promise.resolve(jsonResponse({})),
+      ttlMs: 0,
+    });
+    await expect(result.refreshing).resolves.toBeUndefined();
+    expect(await readFile(join(home, 'models.dev.json'), 'utf8')).toBe(before);
+    expect(result.snapshot.providers).toHaveLength(3);
+  });
+});
+
+describe('the shipped copy', () => {
+  it('loads from assets when the build shipped one', async () => {
+    const bundled = await readBundledCache();
+    // Missing is allowed - a build may omit the asset and the network path
+    // still works - but present must parse to a real catalogue.
+    if (bundled === undefined) return;
+    const providers = parseRegistry(bundled.payload);
+    expect(providers.length).toBeGreaterThan(50);
+    expect(typeof bundled.fetchedAt).toBe('number');
+  });
+
+  it('keeps a download budget wider than the payload needs', () => {
+    // Measured: the payload is ~6 MB and takes ~20 s to download. The old 10 s
+    // cap aborted every refresh, which is what kept the list looking broken.
+    expect(DEFAULT_TIMEOUT_MS).toBeGreaterThanOrEqual(45_000);
   });
 });
 

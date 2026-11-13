@@ -39,6 +39,14 @@ import {
   type AutonomyLevel,
 } from './permissions/autonomy.js';
 import { loadAssistantConfig } from './config/assistant-config.js';
+import {
+  formatPrice,
+  loadRegistry,
+  readBundledCache,
+  refreshRegistry,
+  type ProviderInfo,
+} from './providers/model-registry.js';
+import { formatTokens } from './tui/tool-blocks.js';
 import { runAssistantCommand } from './conversation/assistant-commands.js';
 import { canRunTui } from './tui/can-run.js';
 import { describeStatus, parseProfile } from './execution/environment.js';
@@ -323,6 +331,118 @@ async function confirm(question: string): Promise<boolean> {
   return answer === 'y' || answer === 'yes';
 }
 
+/**
+ * The endpoint for a vendor, when the dataset states one or Atlas knows it.
+ *
+ * Most vendors carry their endpoint in the dataset. The two Atlas already
+ * knows by name (openai, anthropic) get the same defaults the rest of the
+ * config system uses; any other vendor with no stated endpoint stays out of
+ * the menu rather than appearing with a guessed URL.
+ */
+function vendorEndpoint(vendor: ProviderInfo): string | undefined {
+  if (vendor.baseUrl !== undefined) return vendor.baseUrl;
+  if (vendor.id === 'openai') return DEFAULT_BASE_URLS['openai-compatible'];
+  if (vendor.id === 'anthropic') {
+    return DEFAULT_BASE_URLS['anthropic-compatible'];
+  }
+  return undefined;
+}
+
+/** The registry vendor that serves `url`, if one states it. */
+function vendorForUrl(
+  providers: readonly ProviderInfo[],
+  url: string,
+): ProviderInfo | undefined {
+  const needle = url.replace(/\/+$/, '');
+  return providers.find(
+    (vendor) => vendorEndpoint(vendor)?.replace(/\/+$/, '') === needle,
+  );
+}
+
+/**
+ * First-run wire format choice, as a list.
+ *
+ * A first run used to be four free-text prompts; every other harness opens on
+ * a list, and the wire format is the one choice where the options are fixed,
+ * so it is the cheapest place to start showing them.
+ */
+async function promptWireFormat(): Promise<string> {
+  console.log('Wire format:');
+  console.log(
+    '  1) openai-compatible    OpenAI, DeepSeek, Ollama, vLLM, most gateways',
+  );
+  console.log('  2) anthropic-compatible Anthropic');
+  const answer = await promptText('Provider', '1');
+  if (answer === '1') return 'openai-compatible';
+  if (answer === '2') return 'anthropic-compatible';
+  return answer;
+}
+
+/** Base URL prompt, offering the vendors that state an endpoint for it. */
+async function promptBaseUrl(
+  protocol: ProviderName,
+  providers: readonly ProviderInfo[],
+): Promise<string> {
+  const wantsAnthropic = protocol === 'anthropic-compatible';
+  const options = providers
+    .flatMap((vendor) => {
+      const url = vendorEndpoint(vendor);
+      if (url === undefined) return [];
+      return /anthropic/i.test(url) === wantsAnthropic ? [{ vendor, url }] : [];
+    })
+    .slice(0, 12);
+  if (options.length > 0) {
+    console.log('Providers (largest catalogues first):');
+    options.forEach((option, index) => {
+      console.log(
+        `  ${index + 1}) ${option.vendor.name} — ${option.url} (${option.vendor.models.length} models)`,
+      );
+    });
+  }
+  const answer = await promptText(
+    'Base URL (number, any URL, or blank for provider default)',
+  );
+  if (answer === '') return DEFAULT_BASE_URLS[protocol];
+  if (/^\d+$/.test(answer)) {
+    const picked = options[Number(answer) - 1];
+    if (picked === undefined) {
+      throw new CliInputError(`No entry ${answer} in the list.`);
+    }
+    return picked.url;
+  }
+  return answer;
+}
+
+/** Model prompt, offering the chosen vendor's models when one is known. */
+async function promptModel(
+  vendor: ProviderInfo | undefined,
+  defaultValue: string,
+): Promise<string> {
+  const choices = vendor?.models.slice(0, 12) ?? [];
+  if (vendor === undefined || choices.length === 0) {
+    return promptText('Model', defaultValue);
+  }
+  console.log(`Models from ${vendor.name} (largest context first):`);
+  choices.forEach((model, index) => {
+    const context =
+      model.context === 0 ? '' : `  ${formatTokens(model.context)} ctx`;
+    const price = ` ${formatPrice(model.pricing) ?? 'no published price'}`;
+    console.log(`  ${index + 1}) ${model.id}${context}${price}`);
+  });
+  const answer = await promptText(
+    'Model (number or any model id)',
+    defaultValue,
+  );
+  if (/^\d+$/.test(answer)) {
+    const picked = choices[Number(answer) - 1];
+    if (picked === undefined) {
+      throw new CliInputError(`No entry ${answer} in the list.`);
+    }
+    return picked.id;
+  }
+  return answer;
+}
+
 async function fileExists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -349,12 +469,7 @@ async function runConfigInit(
     }
   }
 
-  const providerInput =
-    options.provider ??
-    (await promptText(
-      'Provider (openai-compatible/anthropic-compatible)',
-      'openai-compatible',
-    ));
+  const providerInput = options.provider ?? (await promptWireFormat());
   const providerResult = providerNameSchema.safeParse(providerInput);
   if (!providerResult.success) {
     throw new CliInputError(
@@ -362,19 +477,31 @@ async function runConfigInit(
     );
   }
   const provider = providerResult.data;
-  const model =
-    options.model ??
-    (await promptText(
-      'Model',
-      provider === 'openai-compatible' ? 'gpt-4.1-mini' : 'claude-sonnet-4-5',
-    ));
+
+  // The lists below come from the catalogue shipped with the install, so a
+  // first run with no network still opens on providers and models rather than
+  // four blank prompts. A fully flagged invocation never touches it.
+  const needsCatalogue =
+    options.baseUrl === undefined || options.model === undefined;
+  const providers = needsCatalogue
+    ? (
+        await loadRegistry({
+          atlasHome: loadAssistantConfig().homeDirectory,
+          bundledCache: await readBundledCache(),
+        })
+      ).snapshot.providers
+    : [];
+
+  const baseUrl = options.baseUrl ?? (await promptBaseUrl(provider, providers));
+  const vendor = vendorForUrl(providers, baseUrl);
+  // A known vendor leads with its own top model, so the blank-enter default
+  // matches the endpoint it was picked for; anything else keeps the
+  // wire-format default that has always been offered here.
+  const defaultModel =
+    vendor?.models[0]?.id ??
+    (provider === 'openai-compatible' ? 'gpt-4.1-mini' : 'claude-sonnet-4-5');
+  const model = options.model ?? (await promptModel(vendor, defaultModel));
   const apiKey = options.apiKey ?? (await promptSecret('API key: '));
-  const baseUrl =
-    options.baseUrl ??
-    (await promptText(
-      'Base URL (blank for provider default)',
-      DEFAULT_BASE_URLS[provider],
-    ));
 
   const config: AtlasConfig = {
     provider,
@@ -391,6 +518,7 @@ async function runConfigInit(
 
   await saveConfig(configPath, config);
   console.log(`Configuration saved to ${configPath}.`);
+  console.log('Every provider and model is listed by "atlas models".');
 }
 
 /** Commands available inside the assistant loop. */
@@ -826,6 +954,71 @@ export async function main(argv = process.argv): Promise<void> {
   const history = program
     .command('history')
     .description('list persisted conversations');
+  program
+    .command('models')
+    .description('list the providers and models Atlas can offer')
+    .argument('[provider]', 'only show this provider (id or name)')
+    .option('--refresh', 'update the catalogue from the network first', false)
+    .action(
+      async (provider: string | undefined, options: { refresh: boolean }) => {
+        const home = loadAssistantConfig().homeDirectory;
+        const bundledCache = await readBundledCache();
+        if (options.refresh) {
+          const outcome = await refreshRegistry({
+            atlasHome: home,
+            bundledCache,
+          });
+          if (outcome.error !== undefined) {
+            console.error(
+              `could not refresh the provider catalogue (${outcome.error}); using the copy on disk`,
+            );
+          }
+        }
+        const { snapshot } = await loadRegistry({
+          atlasHome: home,
+          bundledCache,
+        });
+        const wanted = provider?.trim().toLowerCase();
+        const listed =
+          wanted === undefined
+            ? snapshot.providers
+            : snapshot.providers.filter(
+                (entry) =>
+                  entry.id.toLowerCase() === wanted ||
+                  entry.name.toLowerCase() === wanted,
+              );
+        const first = listed[0];
+        if (first === undefined) {
+          console.error(
+            wanted === undefined
+              ? 'no provider catalogue available'
+              : `no provider matches "${provider}"`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+        if (wanted === undefined) {
+          for (const entry of listed) {
+            console.log(`${entry.id}  ${entry.models.length} models`);
+          }
+          const total = snapshot.providers.reduce(
+            (sum, entry) => sum + entry.models.length,
+            0,
+          );
+          console.log(
+            `${snapshot.providers.length} providers · ${total} models`,
+          );
+          return;
+        }
+        console.log(`${first.id} — ${first.models.length} models`);
+        for (const model of first.models) {
+          const context =
+            model.context === 0 ? '' : `  ${formatTokens(model.context)} ctx`;
+          const price = ` ${formatPrice(model.pricing) ?? 'no published price'}`;
+          console.log(`  ${model.id}${context}${price}`);
+        }
+      },
+    );
   const audit = program
     .command('audit')
     .description('view recent shell permission audit entries')
@@ -837,7 +1030,9 @@ export async function main(argv = process.argv): Promise<void> {
     .option('--limit <number>', 'maximum entries to show', parseAuditLimit);
   program
     .command('status')
-    .description('show the configured provider, model, and active protection mode')
+    .description(
+      'show the configured provider, model, and active protection mode',
+    )
     .action(async () => {
       // Resolves the environment for real rather than reporting a stored
       // setting: "is the sandbox on right now" is a question about this host,
@@ -853,16 +1048,11 @@ export async function main(argv = process.argv): Promise<void> {
         profile:
           parseProfile(process.env.ATLAS_SANDBOX_PROFILE) ??
           initialProfile(
-            await isTrusted(
-              loadAssistantConfig().homeDirectory,
-              process.cwd(),
-            ),
+            await isTrusted(loadAssistantConfig().homeDirectory, process.cwd()),
           ),
         writableRoots: [process.cwd()],
         networkEnabled: process.env.ATLAS_SANDBOX_NETWORK === '1',
-        ...(process.env.ATLAS_FULL_ACCESS === '1'
-          ? { forceLocal: true }
-          : {}),
+        ...(process.env.ATLAS_FULL_ACCESS === '1' ? { forceLocal: true } : {}),
       });
       try {
         const loaded = await loadConfig();
@@ -912,9 +1102,7 @@ export async function main(argv = process.argv): Promise<void> {
       } catch (error) {
         // Refusing `/` is the expected failure here, so name it rather than
         // letting a raw throw reach the user as a stack trace.
-        console.error(
-          error instanceof Error ? error.message : String(error),
-        );
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
         return;
       }
@@ -959,7 +1147,8 @@ export async function main(argv = process.argv): Promise<void> {
     .action(async (opts: { phrase?: string }) => {
       const home = loadAssistantConfig().homeDirectory;
       const phrase =
-        opts.phrase ?? (await promptText(`Type "${FULL_ACCESS_PHRASE}" to confirm: `));
+        opts.phrase ??
+        (await promptText(`Type "${FULL_ACCESS_PHRASE}" to confirm: `));
       try {
         const record = await enableFullAccess(home, phrase);
         console.log('Full access ENABLED.');

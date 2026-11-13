@@ -36,12 +36,15 @@ import { describeToolCall } from '../conversation/narration.js';
 import type { AssistantRuntime } from '../conversation/assistant-runtime.js';
 import type { TurnToolCall } from '../conversation/session.js';
 import {
-  formatPrice,
   loadRegistry,
-  type ModelInfo,
-  type ProviderInfo,
+  readBundledCache,
   type RegistrySnapshot,
 } from '../providers/model-registry.js';
+import {
+  catalogueGroups,
+  pickModels,
+  toModelChoice,
+} from './model-catalogue.js';
 import { resolveTheme, tint, type Palette } from './theme.js';
 import { describeState, type AssistantState } from './states.js';
 import {
@@ -57,7 +60,11 @@ import { Composer } from './components/Composer.js';
 import { Wordmark } from './components/Wordmark.js';
 import { CommandPalette } from './components/CommandPalette.js';
 import { ConfirmModal } from './components/ConfirmModal.js';
-import { ModelPicker, type ProviderGroup } from './components/ModelPicker.js';
+import {
+  ModelPicker,
+  type ModelChoice,
+  type ProviderGroup,
+} from './components/ModelPicker.js';
 import {
   AutonomyModal,
   type AutonomyStep,
@@ -85,30 +92,6 @@ import type { GateDecision, TuiBridge } from './bridge.js';
 /** A permanent scrollback entry: the splash, or a finished turn. */
 type StaticItem = { readonly kind: 'splash' } | TurnView;
 
-/**
- * Rows shown per vendor in the /model picker. The picker renders every row it
- * is handed, and the largest catalogue in the dataset is 610 models, so an
- * uncapped group would bury the manual entry that keeps /model usable.
- */
-const MODELS_PER_PROVIDER = 12;
-
-/**
- * Picks a vendor's models for the picker: at most `MODELS_PER_PROVIDER` of
- * them, with the configured model kept even when it falls outside that window
- * (vendors are ordered by context window, not by what the user is using).
- */
-function pickModels(
-  provider: ProviderInfo,
-  activeModel: string,
-): readonly ModelInfo[] {
-  const all = provider.models;
-  if (all.length <= MODELS_PER_PROVIDER) return all;
-  const active = all.find((entry) => entry.id === activeModel);
-  if (active === undefined) return all.slice(0, MODELS_PER_PROVIDER);
-  const head = all.slice(0, MODELS_PER_PROVIDER).filter((e) => e !== active);
-  return [active, ...head].slice(0, MODELS_PER_PROVIDER);
-}
-
 /** Which modal, if any, owns the keyboard. */
 type ModalKind = 'none' | 'confirm' | 'palette' | 'model' | 'init' | 'autonomy';
 
@@ -131,17 +114,14 @@ interface LiveTool {
   expanded: boolean;
 }
 
-/** Projects a registry model into what the picker renders. */
-function toModelChoice(entry: {
-  id: string;
-  context: number;
-  pricing?: { input: number; output: number } | undefined;
-}): ProviderGroup['models'][number] {
-  return {
-    model: entry.id,
-    ...(entry.context === 0 ? {} : { contextWindow: entry.context }),
-    note: formatPrice(entry.pricing) ?? 'no published price',
-  };
+/** "Nov 12, 2026", or undefined when the timestamp is not a real date. */
+function catalogueDate(fetchedAt: number): string | undefined {
+  if (!Number.isFinite(fetchedAt) || fetchedAt <= 0) return undefined;
+  return new Date(fetchedAt).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 export interface AtlasAppProps {
@@ -264,6 +244,8 @@ export function AtlasApp({
     undefined,
   );
   const [registryLoading, setRegistryLoading] = useState(true);
+  /** Live search text typed into the /model picker. */
+  const [modelQuery, setModelQuery] = useState('');
 
   /** Providers the user has already connected, from the key in the environment. */
   const configuredProviders = useMemo(
@@ -297,28 +279,52 @@ export function AtlasApp({
     bridge.drainNotices(),
   );
 
-  // The provider/model catalogue comes from models.dev, cached on disk. A
-  // failure here must never block the interface: it degrades to whatever is
-  // cached, and manual entry keeps working.
+  // The provider/model catalogue ships with the install and is upgraded from
+  // the network, cached on disk. A failure here must never block the
+  // interface: it degrades to whatever copy is on disk, and manual entry keeps
+  // working. The notice reports the outcome of the update attempt - it never
+  // claims the source was unreachable before the attempt has been made.
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const result = await loadRegistry({
         atlasHome: runtime.assistantConfig.homeDirectory,
+        bundledCache: await readBundledCache(),
       });
       if (cancelled) return;
       setRegistry(result.snapshot);
       setRegistryLoading(false);
-      if (result.stale) {
+      if (
+        result.snapshot.providers.length === 0 &&
+        result.error !== undefined
+      ) {
         setRegistryNotice(
-          result.snapshot.providers.length === 0
-            ? `could not reach models.dev (${
-                result.error ?? 'unknown error'
-              }); manual entry still works`
-            : `models.dev unreachable; showing a cached list`,
+          `could not download the provider catalogue (${result.error}); manual entry still works`,
         );
+        return;
       }
+      if (result.refreshing === undefined) {
+        setRegistryNotice(undefined);
+        return;
+      }
+      const refreshed = await result.refreshing;
+      if (cancelled) return;
+      if (refreshed === undefined) {
+        const date = catalogueDate(result.snapshot.fetchedAt);
+        setRegistryNotice(
+          date === undefined
+            ? `couldn't update the provider list; showing the copy shipped with Atlas`
+            : `couldn't update the provider list; showing the copy from ${date}`,
+        );
+        return;
+      }
+      setRegistry({
+        providers: refreshed.providers,
+        fetchedAt: refreshed.fetchedAt,
+        source: 'cache',
+      });
+      setRegistryNotice(undefined);
     })();
     return () => {
       cancelled = true;
@@ -605,6 +611,7 @@ export function AtlasApp({
         // `/model` and `/init` open modals rather than being handled inline.
         const trimmed = inputRef.current.trim();
         if (trimmed === '/model') {
+          setModelQuery('');
           setModal('model');
           return;
         }
@@ -660,7 +667,10 @@ export function AtlasApp({
       inputRef.current = `/${command.name}`;
       setInput(inputRef.current);
       if (command.opensModal) {
-        if (command.name === 'model') setModal('model');
+        if (command.name === 'model') {
+          setModelQuery('');
+          setModal('model');
+        }
         if (command.name === 'autonomy') {
           setAutonomyStep('pick');
           setAutonomyTyped('');
@@ -680,19 +690,25 @@ export function AtlasApp({
     [submit],
   );
 
+  // No source attribution in the status line: no other harness names where
+  // its list comes from in the UI (the credit lives in the README, next to
+  // the bundled copy's licence). What matters here is freshness.
+  const registryDate = registryLoading
+    ? undefined
+    : catalogueDate(registry.fetchedAt);
   const registryMeta = registryLoading
-    ? 'loading models.dev...'
-    : `${registry.providers.length} providers from models.dev`;
+    ? 'loading provider list…'
+    : registry.providers.length === 0
+      ? 'no provider list'
+      : registryDate === undefined
+        ? `${registry.providers.length} providers`
+        : `${registry.providers.length} providers · updated ${registryDate}`;
 
   /**
-   * Models available to switch to.
-   *
-   * Scoped to providers the user has already connected. Listing every vendor
-   * in the dataset here was wrong: `/model` switches between models you can
-   * actually reach, and `/init` is where a provider gets added. Established
-   * harnesses scope the picker the same way.
+   * The connected section of `/model`: the vendor the config actually points
+   * at, or the configured endpoint when the registry does not describe it.
    */
-  const modelGroups: readonly ProviderGroup[] = useMemo(() => {
+  const connectedGroups: readonly ProviderGroup[] = useMemo(() => {
     const groups: ProviderGroup[] = [];
     const activeVendor = registry.providers.find(
       (provider) =>
@@ -713,20 +729,25 @@ export function AtlasApp({
         models: [{ model, note: 'active this session' }],
       });
     }
-
-    // Manual entry stays available: the registry is community-maintained and
-    // a genuinely new model may not be in it yet.
-    groups.push({
-      provider: 'not listed?',
-      models: [
-        {
-          model,
-          note: 'enter any model id — /init adds a custom endpoint',
-        },
-      ],
-    });
     return groups;
   }, [registry.providers, runtime.config.baseUrl, model]);
+
+  /**
+   * Manual entry stays available: the dataset is community-maintained and a
+   * genuinely new model may not be in it yet. What is typed into the picker's
+   * search is offered as the model id, which is what makes the row's promise
+   * - "enter any model id" - actually true.
+   */
+  const manualChoice: ModelChoice = {
+    model: modelQuery.trim() === '' ? model : modelQuery.trim(),
+    note: 'enter any model id — /init adds a custom endpoint',
+  };
+
+  /** The full dataset, narrowed live by the picker's search box. */
+  const modelCatalogue = useMemo(
+    () => catalogueGroups(registry.providers, modelQuery, model),
+    [registry.providers, modelQuery, model],
+  );
 
   const submitKey = useCallback(async (): Promise<void> => {
     const chosen = wizardRows[wizardIndex];
@@ -948,8 +969,12 @@ export function AtlasApp({
         <ModelPicker
           palette={palette}
           color={color}
-          groups={modelGroups}
+          groups={connectedGroups}
+          catalogue={modelCatalogue}
+          manual={{ provider: 'not listed?', choice: manualChoice }}
           activeModel={model}
+          query={modelQuery}
+          onQueryChange={setModelQuery}
           notice={registryNotice ?? registryMeta}
           onSelect={(provider, chosen) => {
             runtime.session.setModel(chosen);

@@ -29,8 +29,15 @@ export const MODELS_DEV_URL = 'https://models.dev/api.json';
 /** Cache is considered fresh for a day. */
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Guards against a hung request when the network is slow. */
-const DEFAULT_TIMEOUT_MS = 10_000;
+/**
+ * Guards against a hung request when the network is slow.
+ *
+ * Exported because the value is a measured budget, not a guess: the payload is
+ * ~6 MB and downloads in ~20 s on an ordinary connection, so the old 10 s cap
+ * aborted every refresh - which is what kept the catalogue permanently stale
+ * and the picker permanently claiming the source was unreachable.
+ */
+export const DEFAULT_TIMEOUT_MS = 45_000;
 
 export interface ModelPricing {
   /** USD per million input tokens, as the dataset reports it. */
@@ -186,7 +193,7 @@ export function cachePath(atlasHome: string): string {
   return join(atlasHome, 'models.dev.json');
 }
 
-interface CacheFile {
+export interface CacheFile {
   readonly fetchedAt: number;
   readonly payload: unknown;
 }
@@ -199,6 +206,31 @@ export interface RegistryOptions {
   /** Injected so tests never touch the network. */
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => number;
+  /**
+   * A catalogue shipped with the install, used to seed the cache on a first
+   * run so the provider list exists before the network has ever answered.
+   * Omitted (the default) disables the seed, which is what tests want.
+   */
+  readonly bundledCache?: CacheFile | undefined;
+}
+
+/** Outcome of the background refresh a stale cache kicks off. */
+export interface RegistryRefresh {
+  readonly fetchedAt: number;
+  readonly providers: readonly ProviderInfo[];
+}
+
+/** What loadRegistry returns. `refreshing` never rejects. */
+export interface RegistryLoadResult {
+  readonly snapshot: RegistrySnapshot;
+  readonly stale: boolean;
+  readonly error?: string;
+  /**
+   * Present when the cache was stale: resolves with the refreshed catalogue,
+   * or undefined when the update failed - so a caller can report the truth
+   * after the attempt instead of guessing "unreachable" before it.
+   */
+  readonly refreshing?: Promise<RegistryRefresh | undefined>;
 }
 
 function isFresh(fetchedAt: number, ttlMs: number, now: number): boolean {
@@ -219,6 +251,37 @@ async function readCache(
   }
 }
 
+let bundledRead: Promise<CacheFile | undefined> | undefined;
+
+/**
+ * The catalogue shipped with the install (assets/models-dev-cache.json).
+ *
+ * Present so a first run - no cache, slow or absent network - still opens on
+ * a full provider list instead of an empty picker. Resolves to undefined when
+ * the file is missing or malformed: the network path still works, and no
+ * caller may fail because a build omitted the asset.
+ *
+ * Parsed once per process: the file is ~6 MB.
+ */
+export function readBundledCache(): Promise<CacheFile | undefined> {
+  bundledRead ??= (async () => {
+    try {
+      const url = new URL(
+        '../../assets/models-dev-cache.json',
+        import.meta.url,
+      );
+      const parsed: unknown = JSON.parse(await readFile(url, 'utf8'));
+      if (!isRecord(parsed)) return undefined;
+      if (typeof parsed.fetchedAt !== 'number') return undefined;
+      if (!isRecord(parsed.payload)) return undefined;
+      return { fetchedAt: parsed.fetchedAt, payload: parsed.payload };
+    } catch {
+      return undefined;
+    }
+  })();
+  return bundledRead;
+}
+
 /**
  * Loads the registry, preferring a fresh cache and falling back to a stale one.
  *
@@ -228,12 +291,25 @@ async function readCache(
  */
 export async function loadRegistry(
   options: RegistryOptions,
-): Promise<{ snapshot: RegistrySnapshot; stale: boolean; error?: string }> {
+): Promise<RegistryLoadResult> {
   const now = options.now ?? Date.now;
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const url = options.url ?? MODELS_DEV_URL;
   const path = cachePath(options.atlasHome);
-  const cached = await readCache(path);
+  let cached = await readCache(path);
+
+  if (cached === undefined && options.bundledCache !== undefined) {
+    // First run: seed the cache from the catalogue shipped with the install,
+    // so the provider list is there before the network has ever answered.
+    // Other harnesses never open on an empty list, and neither should Atlas.
+    cached = options.bundledCache;
+    try {
+      await writeCache(path, options.bundledCache);
+    } catch {
+      // A home that cannot be written still gets the list; only the
+      // persistence is skipped, and the refresh below retries the write.
+    }
+  }
 
   // Cache first, always. The dataset is large and the network is not reliable,
   // so a usable cache is served immediately and refreshed in the background.
@@ -243,8 +319,18 @@ export async function loadRegistry(
     const fresh = isFresh(cached.fetchedAt, ttlMs, now());
     if (!fresh) {
       // Stale-while-revalidate: serve what we have, refresh underneath. A failed
-      // refresh can never turn into a failed read.
-      void refreshIntoCache(path, options, now).catch(() => undefined);
+      // refresh can never turn into a failed read; the caller gets the outcome
+      // through `refreshing` so it can say what actually happened.
+      const refreshing = refreshIntoCache(path, options, now);
+      return {
+        snapshot: {
+          providers: parseRegistry(cached.payload),
+          fetchedAt: cached.fetchedAt,
+          source: 'cache',
+        },
+        stale: true,
+        refreshing,
+      };
     }
     return {
       snapshot: {
@@ -252,7 +338,7 @@ export async function loadRegistry(
         fetchedAt: cached.fetchedAt,
         source: 'cache',
       },
-      stale: !fresh,
+      stale: false,
     };
   }
 
@@ -272,11 +358,18 @@ export async function loadRegistry(
       throw new Error(`models.dev responded ${response.status}`);
     }
     const payload: unknown = await response.json();
+    const providers = parseRegistry(payload);
+    // A 200 whose body parses but yields no usable model is a schema change
+    // or a placeholder page, not a catalogue: writing it would destroy the
+    // list on disk rather than update it.
+    if (providers.length === 0) {
+      throw new Error('models.dev returned no usable models');
+    }
     const fetchedAt = now();
     await writeCache(path, { fetchedAt, payload });
     return {
       snapshot: {
-        providers: parseRegistry(payload),
+        providers,
         fetchedAt,
         source: 'network',
       },
@@ -310,11 +403,16 @@ export async function refreshRegistry(
     if (!response.ok)
       throw new Error(`models.dev responded ${response.status}`);
     const payload: unknown = await response.json();
+    const providers = parseRegistry(payload);
+    // Never replace a working catalogue with an empty one: see loadRegistry.
+    if (providers.length === 0) {
+      throw new Error('models.dev returned no usable models');
+    }
     const fetchedAt = now();
     await writeCache(cachePath(options.atlasHome), { fetchedAt, payload });
     return {
       snapshot: {
-        providers: parseRegistry(payload),
+        providers,
         fetchedAt,
         source: 'network',
       },
@@ -459,13 +557,15 @@ export async function modelExpectsInlineReasoning(
  *
  * Used by the stale-while-revalidate path, so a failed refresh can never turn
  * into a failed read: /init keeps working on the cached catalogue even when
- * models.dev is unreachable.
+ * the network is unreachable. Returns the refreshed catalogue, or undefined
+ * when the update did not happen - callers report that outcome rather than
+ * claiming "unreachable" before the attempt. Never rejects.
  */
 async function refreshIntoCache(
   path: string,
   options: RegistryOptions,
   now: () => number,
-): Promise<void> {
+): Promise<RegistryRefresh | undefined> {
   const doFetch = options.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -475,9 +575,19 @@ async function refreshIntoCache(
     const response = await doFetch(options.url ?? MODELS_DEV_URL, {
       signal: controller.signal,
     });
-    if (!response.ok) return;
+    if (!response.ok) return undefined;
     const payload: unknown = await response.json();
-    await writeCache(path, { fetchedAt: now(), payload });
+    const providers = parseRegistry(payload);
+    // A 200 with no usable model is not an update; writing it would wipe the
+    // list on disk - the exact "file overwrites everything" failure mode.
+    if (providers.length === 0) return undefined;
+    const fetchedAt = now();
+    await writeCache(path, { fetchedAt, payload });
+    return { fetchedAt, providers };
+  } catch {
+    // Offline, timed out, malformed body, read-only home: all mean "no
+    // update", never "no catalogue".
+    return undefined;
   } finally {
     clearTimeout(timer);
   }
