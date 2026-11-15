@@ -1,0 +1,54 @@
+
+=== BEFORE (/home/titan/atlas-backup-20261016/dist/execution/bwrap/mount-policy.js) ===
+mount-policy.js sha256: f6ff9a522c54b54df977736ab42a205ddcfeb767e87f96a5fed2384489d82239
+assertHomeAllowlist exported: undefined
+-- under-$HOME mounts that expose host content --
+  bind-read  /tmp/s4-home-97BRfA/proj -> /tmp/s4-home-97BRfA/proj trusted=true
+  bind-write /tmp/s4-home-97BRfA/proj -> /tmp/s4-home-97BRfA/proj trusted=true
+  bind-read  /tmp/s4-home-97BRfA/proj/.git/config -> /tmp/s4-home-97BRfA/proj/.git/config trusted=true
+  bind-read  /tmp/s4-home-97BRfA/proj/.git/hooks -> /tmp/s4-home-97BRfA/proj/.git/hooks trusted=true
+-- under-$HOME invisible mounts (masks/fresh) --
+  mask       /tmp/s4-home-97BRfA/.ssh
+  mask       /tmp/s4-home-97BRfA/.aws
+  mask       /tmp/s4-home-97BRfA/.atlas
+
+=== AFTER (/home/titan/atlas/dist/execution/bwrap/mount-policy.js) ===
+mount-policy.js sha256: 584e092ad4b7795c36124058d93e2029d00c4d17ea2a6b802f78e8120ebdfe5a
+assertHomeAllowlist exported: function assertHomeAllowlist(cwd, writableRoots, argv) {
+    const userHome = resolve(process.env.HOME ?? '/root');
+    // A home of '/' would classify every path as in-home; the sandbox refusal
+    // checks above already handle a host-root situation for cwd and writable
+    // roots, so this pass simply sits out that degenerate case.
+    if (userHome === '/')
+        return;
+    const trustedRoots = [resolve(cwd), ...writableRoots.map((root) => resolve(root))];
+    const trusted = (path) => trustedRoots.some((root) => contains(root, path));
+    const inHome = (path) => path !== '' && path !== userHome && contains(userHome, path);
+    for (const mount of parseMounts(argv)) {
+        if (mount.kind === 'mask' || mount.kind === 'tmpfs')
+            continue;
+        // A symlink whose target is home data and whose landing spot is not is
+        // still an escape route when the landing spot is reachable; judge both.
+        if (mount.source !== undefined && inHome(mount.source) && !trusted(mount.source)) {
+            throw new Error(`refusing an unapproved source under the home directory: ${mount.source} -> ${mount.path} (${mount.kind})`);
+        }
+        if (inHome(mount.path) && !trusted(mount.path) && !trusted(mount.source ?? '')) {
+            throw new Error(`refusing an unapproved mount under the home directory: ${mount.source ?? ''} -> ${mount.path} (${mount.kind}). Nothing under $HOME enters the sandbox except the trusted workspace and fresh invisible mounts.`);
+        }
+    }
+}
+-- under-$HOME mounts that expose host content --
+  bind-read  /tmp/s4-home-97BRfA/proj -> /tmp/s4-home-97BRfA/proj trusted=true
+  bind-write /tmp/s4-home-97BRfA/proj -> /tmp/s4-home-97BRfA/proj trusted=true
+  bind-read  /tmp/s4-home-97BRfA/proj/.git/config -> /tmp/s4-home-97BRfA/proj/.git/config trusted=true
+  bind-read  /tmp/s4-home-97BRfA/proj/.git/hooks -> /tmp/s4-home-97BRfA/proj/.git/hooks trusted=true
+-- under-$HOME invisible mounts (masks/fresh) --
+  mask       /tmp/s4-home-97BRfA/.ssh
+  mask       /tmp/s4-home-97BRfA/.aws
+  mask       /tmp/s4-home-97BRfA/.atlas
+
+=== enforcement delta ===
+before exports a home-allowlist guard: false
+after refusal of unapproved under-home bind: refusing an unapproved source under the home directory: /tmp/s4-home-97BRfA/.aws -> /tmp/s4-home-97BRfA/.aws (bind-read)
+
+fixture home removed; evidence at /tmp/opencode/atlas-2l/s4/home-exposure-audit.json
