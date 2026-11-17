@@ -195,6 +195,15 @@ function bindWritableAsRo(args: string[], rawPath: string): void {
   // in the protected lists carry a trailing slash (`dist/`), and keeping it
   // would make the argv un-greppable against its own path list for no benefit.
   const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
+  // A protected path that does not exist has nothing to protect, and bwrap
+  // refuses to start when a bind source is missing (`Can't find source path`,
+  // exit 1) - so binding one unconditionally fails EVERY tool call in the
+  // session, not just the write it was meant to block. The protected lists
+  // contain entries that are legitimately absent: the compiled counterparts
+  // of the protected sources are `src/**/*.js` spellings that only a build
+  // would produce, and `src/selfmod/` need not exist in a checkout. Skipping
+  // keeps the sandbox up while the paths that do exist stay pinned.
+  if (!existsSync(path)) return;
   args.push('--ro-bind', path, path);
 }
 

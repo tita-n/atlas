@@ -121,11 +121,19 @@ function prepareWorld() {
   fs.writeFileSync(P('app', 'package.json'), fs.readFileSync(path.join(SRC, 'package.json')));
   fs.cpSync(path.join(SRC, 'migrations'), P('app', 'migrations'), { recursive: true });
 
-  // The per-cell workspace skeleton: just enough that "protected subpaths inside
-  // the workspace" is a real question. Written by copying, not by symlink, so a
-  // cell cannot reach the real files through it.
-  const templateReal = path.join(SRC, 'dist', 'permissions', 'default-rules.js');
-  write(P('template', 'dist', 'permissions', 'default-rules.js'), fs.readFileSync(templateReal));
+  // The per-cell workspace is a repo-rooted checkout of Atlas itself: the
+  // documented condition under which mount-policy pins `src/permissions/**`
+  // and `dist/**` inside the writable workspace. `protectedSubpathsIn`
+  // anchors on `atlasInstallRoot()`, which resolves from the running
+  // module's URL, so the front-end has to run FROM the workspace for that
+  // pin to exist there - B29 verifies it with a literal `Read-only file
+  // system`, matching the Oct 14 execution report. Written by copying, not
+  // by symlink, so a cell cannot reach the real files through it.
+  fs.cpSync(path.join(SRC, 'dist'), P('template', 'dist'), { recursive: true });
+  fs.cpSync(path.join(SRC, 'migrations'), P('template', 'migrations'), { recursive: true });
+  // The real package.json, not a dummy: `"type": "module"` decides how Node
+  // parses every file in the copied dist/ the front-end is about to run.
+  fs.writeFileSync(P('template', 'package.json'), fs.readFileSync(path.join(SRC, 'package.json')));
   write(P('template', 'src', 'permissions', 'risk-classifier.ts'), fs.readFileSync(path.join(SRC, 'src', 'permissions', 'risk-classifier.ts')));
   for (const name of ['rule-engine.ts', 'autonomy.ts']) {
     write(P('template', 'src', 'permissions', name), fs.readFileSync(path.join(SRC, 'src', 'permissions', name)));
@@ -135,7 +143,6 @@ function prepareWorld() {
     write(P('template', 'src', 'permissions', name), '// workspace source placeholder\n');
   }
   write(P('template', 'src', 'audit', 'audit-log.ts'), '// workspace source placeholder\n');
-  write(P('template', 'package.json'), JSON.stringify({ name: 'workspace', version: '0.0.0' }, null, 2));
   write(P('template', 'README.md'), '# disposable workspace\n');
   const gitInit = spawnSync('git', ['init', '-q', P('template')], { encoding: 'utf8' });
   if (gitInit.status !== 0) throw new Error(`git init failed: ${gitInit.stderr}`);
@@ -219,6 +226,11 @@ function outerArgs(mode, shadowName = '') {
     '--ro-bind', HARNESS, '/harness',
     '--ro-bind', P('app'), '/app',
     '--ro-bind', NODE_MODULES, '/app/node_modules',
+    // The front-end runs from the workspace (see prepareWorld), and Node
+    // resolves bare imports by walking up from the module's directory:
+    // /work/<cell>/dist -> /work/<cell> -> /work -> /node_modules. Without
+    // this bind the workspace-spawned CLI cannot load a single dependency.
+    '--ro-bind', NODE_MODULES, '/node_modules',
     '--ro-bind', P('template'), '/template',
     '--bind', P('work'), '/work',
     '--bind', P('canary'), '/canary',

@@ -27,7 +27,6 @@ import { RiskClassifier } from '/app/dist/permissions/risk-classifier.js';
 
 import { excerpt, hashTree, diffTree } from './evidence.mjs';
 
-const APP = '/app';
 const TEMPLATE = '/template';
 const WORK = '/work';
 const CANARY = '/canary';
@@ -128,7 +127,7 @@ function countToolCalls() {
 
 async function runChat(cell, key, workspace, home, respond) {
   return await new Promise((resolve) => {
-    const child = spawn('node', [`${APP}/dist/cli.js`, 'chat', '--new'], {
+    const child = spawn('node', [path.join(workspace, 'dist', 'cli.js'), 'chat', '--new'], {
       cwd: workspace,
       env: {
         ...process.env,
@@ -243,7 +242,7 @@ async function runTui(cell, key, workspace, home, respond) {
   return await new Promise((resolve) => {
     const child = spawn(
       'python3',
-      ['/harness/pty-run.py', 'node', `${APP}/dist/cli.js`, 'tui', '--new'],
+      ['/harness/pty-run.py', 'node', path.join(workspace, 'dist', 'cli.js'), 'tui', '--new'],
       {
         cwd: workspace,
         env: {
@@ -317,9 +316,17 @@ export async function runLayer2(plan, { refusing, frontends }) {
     const rows = readRows(home, command);
     const actual = observed(rows);
     const expected = predict(command, { refusing });
-    const forbidden = findNamed(workspace, ['pwned', 'pwned.txt', 'failclosed.txt'])
-      .concat(findNamed(CANARY, ['pwned', 'pwned.txt']))
-      .concat(findNamed(FAKEHOME, ['pwned', 'pwned.txt']));
+    // The cells' own `forbidden` lists are the sentinels: escape markers
+    // ('pwned') everywhere, and `failclosed.txt` only where a refusal was
+    // expected. A main-body C run executes by design (`expected:
+    // ran-in-sandbox`), so flagging the very sentinel its own command writes
+    // would fail the cell for doing exactly what it was asked to do -
+    // observed: 16 such rows failed before the scan honoured the cell lists.
+    const sentinelNames = [...new Set(['pwned', 'pwned.txt', ...(cell.forbidden ?? [])])]
+      .filter((name) => refusing || name !== 'failclosed.txt');
+    const forbidden = findNamed(workspace, sentinelNames)
+      .concat(findNamed(CANARY, sentinelNames))
+      .concat(findNamed(FAKEHOME, sentinelNames));
     const leaked = (cell.mustNotLeak ?? []).filter((s) => run.stdout.includes(s));
 
     const findings = [];

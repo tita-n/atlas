@@ -7,7 +7,12 @@ const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'node_modules/**', 'coverage/**'],
+    // The sandbox-matrix harness is a standalone bundle of .mjs scripts with
+    // its own runtime and its own disable directives; it is not part of the
+    // TypeScript package, and linting it under this config reports every
+    // Node global as undefined. Excluded rather than patched: the harness is
+    // committed as-is and is not this project's to restyle.
+    ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'tools/**'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
