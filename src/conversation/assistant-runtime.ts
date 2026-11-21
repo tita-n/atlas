@@ -24,8 +24,9 @@ import { loadPermissionConfig } from '../config/permission-config.js';
 import { sudoersRuleExists } from '../permissions/sudoers-setup.js';
 import { PermissionGrantStore } from '../permissions/grant-store.js';
 import { RiskClassifier } from '../permissions/risk-classifier.js';
-import { ConfirmationFlow } from '../permissions/confirmation-flow.js';
-import { hardFloorVerdict, readAutonomySync } from '../permissions/autonomy.js';
+
+import { readAutonomySync } from '../permissions/autonomy.js';
+import { createGate } from '../permissions/gate.js';
 import { modelExpectsInlineReasoning } from '../providers/model-registry.js';
 import type { TextConfirmationResult } from '../permissions/confirmation-flow.js';
 import { createProvider } from '../providers/provider-factory.js';
@@ -38,7 +39,15 @@ import { CorrectionsRepository } from '../memory/corrections-repository.js';
 import { FactExtractor } from '../memory/fact-extractor.js';
 import { CorrectionExtractor } from '../memory/correction-extractor.js';
 import { AuditLog } from '../audit/audit-log.js';
-import { ShellSession } from '../shell/shell-session.js';
+import { resolveExecutionEnvironment } from '../execution/resolve-environment.js';
+import { initialProfile } from '../execution/trust.js';
+import type { ProtectionProfile } from '../execution/environment.js';
+import { parseProfile } from '../execution/environment.js';
+import { isTrusted } from '../execution/trust.js';
+import type {
+  ExecutionSession,
+  ExecutionStatus,
+} from '../execution/environment.js';
 import { ShellTool } from '../shell/shell-tool.js';
 import { createAssistantSession } from './session.js';
 import type { AssistantSession } from './session.js';
@@ -95,6 +104,14 @@ export interface CreateAssistantRuntimeOptions {
    * it can tell a running command from a model still thinking.
    */
   readonly onToolStart?: ((call: ToolCall) => void) | undefined;
+  /**
+   * Reports the protection in force as soon as it is known.
+   *
+   * A front-end cannot show the sandbox status without being told it, and a
+   * status line that guesses is worse than no status line. Fires exactly once,
+   * before the first turn, including on the degraded path.
+   */
+  readonly onProtectionChange?: ((status: ExecutionStatus) => void) | undefined;
 }
 
 /** A started assistant runtime, ready to accept turns. */
@@ -245,7 +262,7 @@ export async function createAssistantRuntime(
   const releaseLock = lock.release;
 
   const database = openDatabase(join(home, 'atlas.db'));
-  let shellSession: ShellSession | undefined;
+  let shellSession: ExecutionSession | undefined;
   let session: AssistantSession | undefined;
   let closed = false;
 
@@ -271,39 +288,107 @@ export async function createAssistantRuntime(
       permissionConfig.confirmationPhrase === ''
         ? 'ATLAS CONFIRM'
         : permissionConfig.confirmationPhrase;
-    const home = process.env.HOME;
+    const home = process.env.HOME ?? '/';
 
-    const confirmation = new ConfirmationFlow({
+    // One factory, both front-ends. Previously only the TUI wired the floor and
+    // autonomy in, so atlas chat had a weaker envelope than atlas tui.
+    const confirmation = createGate({
       provider,
       model: config.model,
-      // Unrecoverable actions and edits to Atlas's own safety configuration
-      // always stop for a human, whatever the configured level says.
-      hardFloor: (command) => hardFloorVerdict(command, { home }).applies,
+      phrase: confirmationPhrase,
+      home,
+      blockAll: assistantConfig.textConfirmMode === 'block',
       // Read at decision time so lowering the level takes effect without a
       // restart. Reading it once at startup made the setting look inert.
-      autonomy: () => ({
-        level: readAutonomySync(assistantConfig.homeDirectory).level,
-      }),
-      phrase: confirmationPhrase,
-      confirmText: async (): Promise<TextConfirmationResult> => {
-        if (assistantConfig.textConfirmMode === 'block') return 'deny';
-        return options.requestConfirmation(confirmationPhrase);
-      },
+      autonomy: () => readAutonomySync(assistantConfig.homeDirectory).level,
+      ask: (): Promise<TextConfirmationResult> =>
+        options.requestConfirmation(confirmationPhrase),
       wait: async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       },
     });
 
-    shellSession = new ShellSession();
+    // Where the command actually runs. Resolved before the session is built, so
+    // there is no way to construct a session that never went through the
+    // decision - and so the protection status can be reported rather than
+    // assumed.
+    //
+    // An explicit ATLAS_SANDBOX_PROFILE always wins, so the choice stays
+    // configurable rather than hard-coded. Otherwise the profile comes from
+    // the directory TRUST RECORD: an unknown directory starts read-only, and
+    // workspace-write is something the user agreed to rather than something
+    // that happened because Atlas was launched somewhere new.
+    const cwd = process.cwd();
+    // Validated, not cast: a bad value must fail at startup with the variable's
+    // name, not silently corrupt the profile and blow up on an audit append.
+    const requestedProfile = parseProfile(process.env.ATLAS_SANDBOX_PROFILE);
+    const trusted = await isTrusted(assistantConfig.homeDirectory, cwd);
+    const profile: ProtectionProfile =
+      requestedProfile ?? initialProfile(trusted);
+    const environment = await resolveExecutionEnvironment({
+      cwd,
+      atlasHome: assistantConfig.homeDirectory,
+      profile,
+      writableRoots: [cwd],
+      networkEnabled: process.env.ATLAS_SANDBOX_NETWORK === '1',
+      ...(process.env.ATLAS_FULL_ACCESS === '1'
+        ? { forceLocal: true }
+        : {}),
+    });
+    options.onProtectionChange?.(environment.status);
+
+    // Read-only because this directory is unknown. That default is the whole
+    // point - `workspace-write` should be a decision, not an accident - but a
+    // user who hits a read-only error with no way to find the switch just
+    // concludes Atlas is broken. Say how to change it, once, at startup.
+    //
+    // Only when the profile CHOSE read-only. If the user asked for read-only
+    // explicitly, they know, and telling them how to undo their own setting is
+    // noise.
+    if (profile === 'read-only' && requestedProfile === undefined) {
+      notices.line(
+        `Read-only: this directory is not trusted for writing yet. ` +
+          // `.` rather than the absolute path: a cwd with spaces or shell
+          // metacharacters produced a command that could not be pasted, and
+          // `atlas trust add .` is already relative to where the user is.
+          `Run \`atlas trust add .\` to let Atlas write here ` +
+          `(see \`atlas trust list\` for what is already trusted).`,
+      );
+    }
+
+    shellSession = environment.createSession({ cwd: process.cwd() });
     shellSession.restart();
     const sessionForShell = shellSession;
-    const shellTool = new ShellTool({
+    const status = environment.status;
+    const shellTool: ShellTool = new ShellTool({
       session: sessionForShell,
       classifier,
       confirmation,
       auditLog: new AuditLog(database),
       name: 'shell',
       grantStore,
+      // Read at write time so every row carries the isolation that was in
+      // force for THAT command. Without this the audit log cannot answer
+      // "was this confined at the time?", which is the only question it is
+      // worth asking after an escape.
+      //
+      // `escalated` is always false, and that is not a placeholder: there is no
+      // escalation flow in the product. Nothing asks for an extra writable root,
+      // more network, or a sandbox-free run, so nothing ever runs outside the
+      // profile the status reports. It is NOT derived from the profile either -
+      // under `full-access` the user chose that for the whole session, so
+      // nothing was escalated; deriving it from the profile stamped
+      // `escalated = 1` on every row while `gate_path` said `auto-allow`, and
+      // the two most reviewable columns contradicted each other. The column and
+      // the `escalated-out-of-sandbox` vocabulary are reserved for a real flow;
+      // see the report.
+      sandbox: () => ({
+        backend: status.backend,
+        profile: status.profile,
+        writableRoots: [...status.writableRoots],
+        networkEnabled: status.networkEnabled,
+        escalated: false,
+      }),
       // Records which gate approved a dangerous command, so the interim
       // typed-safe-word period is reviewable after the fact.
       gatePath:
@@ -366,6 +451,12 @@ export async function createAssistantRuntime(
       corrections,
       toolExecutor: observedExecutor,
       tools: [shellTool.definition],
+      // File tools, scoped to the project directory by default. Writes outside
+      // it need an explicit grant, matching how the shell gate already works.
+      fileTools: {
+        readRoots: [process.cwd()],
+        writeRoots: [process.cwd()],
+      },
       buildSystemPrompt: () => '',
       expectsInlineReasoning,
       ...(config.maxTokens === undefined
