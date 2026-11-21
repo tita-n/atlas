@@ -47,6 +47,7 @@ if (results.length === 0) {
 }
 
 const problems = [];
+const sharedDirs = [];
 const byOutcome = {};
 const byOutcomeFE = {}; // outcome -> `${frontend}/${autonomy}` -> n
 const byRowKind = {};
@@ -113,7 +114,29 @@ if (existsSync(homeDir)) {
     const emb = (rec.rows ?? []).map(key).join('\n');
     const ind = rows.map(key).join('\n');
     if (emb !== ind) {
-      problems.push(`${dir}: embedded rows differ from the audit database`);
+      // The four shadow runs reuse their main-body C cell's fakehome
+      // directory and run after it, so the shadow's refusal row replaces the
+      // main-body row in that shared atlas.db. The main-body row survives in
+      // results-layer2.json (captured at run time, before the shadow ran).
+      // A shared dir whose database matches its shadow record byte for byte
+      // is therefore explained, not a problem.
+      const shadow = results.find(
+        (r) =>
+          r !== rec &&
+          r.cell === rec.cell &&
+          r.frontend === rec.frontend &&
+          r.autonomy === rec.autonomy &&
+          r.expected === 'refused-degraded',
+      );
+      const shadowEmb =
+        shadow === undefined ? null : (shadow.rows ?? []).map(key).join('\n');
+      if (shadowEmb !== null && shadowEmb === ind) {
+        sharedDirs.push(
+          `${dir}: DB holds the later shadow run's row (matches the shadow record byte for byte); the main-body row is preserved in results-layer2.json`,
+        );
+      } else {
+        problems.push(`${dir}: embedded rows differ from the audit database`);
+      }
     }
   }
 }
@@ -140,10 +163,16 @@ console.log(
   `## Independent database cross-check: ${dbCompared}/${dbCount} per-cell audit databases compared with the embedded rows`,
 );
 console.log('');
+if (sharedDirs.length > 0) {
+  console.log(`## Shared-dir shadow reuse (explained, ${sharedDirs.length}):`);
+  for (const s of sharedDirs) console.log(`- ${s}`);
+  console.log('');
+}
 if (problems.length === 0) {
   console.log('PROBLEMS: none — every record re-derives its own outcome, no');
   console.log('vocabulary gaps, no prediction mismatches, no escalation claims,');
-  console.log('and every embedded row set matches the audit database byte for byte.');
+  console.log('and every embedded row set matches its audit database byte for');
+  console.log('byte (the shared C dirs hold their later shadow row — see above).');
 } else {
   console.log(`PROBLEMS (${problems.length}):`);
   for (const p of problems) console.log(`- ${p}`);
