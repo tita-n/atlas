@@ -9,8 +9,10 @@ import { createInterface } from 'node:readline';
 
 import { loadVoiceConfig, type VoiceConfig } from '../config/voice-config.js';
 import { openDatabase } from '../memory/database.js';
+import { ConversationRepository } from '../memory/conversation-repository.js';
 import { VoiceCorrectionsRepository } from '../memory/voice-corrections-repository.js';
 import { AtlasError } from '../errors.js';
+import { describeStatus } from '../execution/environment.js';
 import {
   MicrophoneCapture,
   rmsEnergy,
@@ -760,29 +762,32 @@ export async function runVoiceListen(
   }
 
   const database = openDatabase();
+  let closeAssistant: (() => Promise<void>) | undefined;
   try {
-    const { ConversationRepository } =
-      await import('../memory/conversation-repository.js');
-    const { Conversation } = await import('../conversation/conversation.js');
-    const { createProvider } = await import('../providers/provider-factory.js');
-    const { FactsRepository } = await import('../memory/facts-repository.js');
-    const { buildSystemPrompt } = await import('../memory/context-builder.js');
-    const { loadConfig } = await import('../config/config.js');
-
-    const runtimeConfig = await loadConfig();
-    const provider = createProvider(runtimeConfig);
-    const facts = new FactsRepository(database);
-    const conversation = new Conversation({
-      model: runtimeConfig.model,
-      ...(runtimeConfig.maxTokens === undefined
-        ? {}
-        : { maxTokens: runtimeConfig.maxTokens }),
-      ...(runtimeConfig.temperature === undefined
-        ? {}
-        : { temperature: runtimeConfig.temperature }),
-      conversationRepository: new ConversationRepository(database),
-      buildSystemPrompt: () => buildSystemPrompt(facts.getAllFacts()),
+    const { createAssistantRuntime } =
+      await import('../conversation/assistant-runtime.js');
+    const started = await createAssistantRuntime({
+      configOptions: {},
+      overrides: {},
+      newConversation: false,
+      // Voice recognition is not an approval signal for shell execution. A
+      // gated action must be approved in an interactive chat/TUI session.
+      requestConfirmation: async () => 'deny',
+      onProtectionChange: (status) => console.log(describeStatus(status)),
     });
+    if (started.locked) {
+      console.error(started.message);
+      process.exitCode = 1;
+      return;
+    }
+    const runtime = started.runtime;
+    closeAssistant = () => runtime.close();
+    const conversationId =
+      runtime.resumedConversationId ??
+      new ConversationRepository(database).getMostRecentConversation()?.id;
+    if (conversationId === undefined) {
+      throw new Error('The assistant runtime did not create a conversation.');
+    }
 
     const corrections = new VoiceCorrectionsRepository(database);
     const backend = await createVoiceBackend({
@@ -808,14 +813,14 @@ export async function runVoiceListen(
       // Command audio is written here so the corrections log can point at the
       // clip instead of storing nothing.
       audioDirectory: config.audioDirectory,
-      conversationId: conversation.id,
+      conversationId,
       corrections: {
         recordHeard: (input) =>
           Promise.resolve(
             corrections.create({
               heardTranscript: input.heardTranscript,
               audioReference: input.audioReference,
-              conversationId: conversation.id ?? null,
+              conversationId,
             }),
           ),
         recordCorrection: (corrected) => {
@@ -825,11 +830,12 @@ export async function runVoiceListen(
           return Promise.resolve(updated ? latest.id : undefined);
         },
       },
-      // Voice text goes into the same Phase 0-2 conversation object that
-      // `atlas chat` uses; there is no separate voice conversation path.
+      // Voice input uses the same gated runtime as chat and TUI; there is no
+      // separate session or execution path.
       onTranscript: async (text) => {
-        const response = await conversation.send(provider, text);
-        console.log(`\natlas: ${response.content}\n`);
+        const response = await runtime.session.handleInput(text);
+        console.log(`\natlas: ${response.narration}\n`);
+        if (response.detail !== '') console.log(response.detail);
       },
     });
 
@@ -874,6 +880,7 @@ export async function runVoiceListen(
       process.exit(process.exitCode ?? 0);
     }
   } finally {
+    await closeAssistant?.();
     database.close();
   }
 }

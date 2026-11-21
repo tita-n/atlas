@@ -27,8 +27,11 @@ import * as path from 'node:path';
 
 import { assertDisposable, DISPOSABLE_ROOT, REAL_HOME, REAL_REPO } from './guard.mjs';
 
-const SRC = '/home/titan/atlas';
-const HARNESS = '/home/titan/atlas/tools/sandbox-matrix';
+// The matrix reads the selected checkout, then copies only build artifacts into
+// the disposable world. Set ATLAS_MATRIX_SOURCE to verify an integration branch
+// without accidentally testing the default main checkout.
+const SRC = path.resolve(process.env.ATLAS_MATRIX_SOURCE ?? '/home/titan/atlas');
+const HARNESS = path.join(SRC, 'tools/sandbox-matrix');
 const NODE_MODULES = path.join(SRC, 'node_modules');
 const BWRAP = '/usr/bin/bwrap';
 const SECRET = 'sk-canary-key-must-never-be-readable';

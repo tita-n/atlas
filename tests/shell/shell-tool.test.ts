@@ -125,6 +125,7 @@ describe('ShellTool', () => {
         decision: 'blocked',
         riskTier: 1,
         outcome: 'denied',
+        gatePath: 'denied-hard-floor',
       });
     } finally {
       fixtureValue.close();

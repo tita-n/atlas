@@ -13,14 +13,9 @@
  * `restart()` brings up a fresh sandbox in the same directory. Shell-local
  * `export`s do not survive that. The escalation flow says so before it does it.
  *
- * **NoNewPrivs is proven on demand, not assumed.** bubblewrap sets it as part
- * of user namespace setup, but "the man page implies it" is not evidence, so
- * {@link BwrapEnvironment.verifyIsolation} runs the check from INSIDE the
- * sandbox and can report `NoNewPrivs: 1` as observed rather than inferred. It
- * is a probe with no production caller yet: startup resolves the backend on a
- * cheap `--version`-style probe, and calling a second bwrap on every session
- * start was not worth the latency. The claim it supports is therefore "this is
- * checkable and here is the check", not "this ran".
+ * **NoNewPrivs is proven on every session start, not assumed.** bubblewrap
+ * setup is checked from inside before a shell starts. A restarted shell repeats
+ * the check; mismatch refuses to start it.
  */
 
 import { spawn } from 'node:child_process';
@@ -171,19 +166,27 @@ export class BwrapEnvironment implements ExecutionEnvironment {
     options: ExecutionSessionOptions = {},
   ): ExecutionSession {
     const cwd = options.cwd ?? this.#cwd;
-    const built = buildBwrapCommand(
-      { ...this.#policy, cwd },
-      this.#bwrapPath,
-      SANDBOXED_SHELL,
-    );
-    return new ShellSession({
-      command: built.argv,
+    return new VerifiedBwrapSession(
+      async (startCwd) => {
+        const built = buildBwrapCommand(
+          { ...this.#policy, cwd: startCwd },
+          this.#bwrapPath,
+          SANDBOXED_SHELL,
+        );
+        return new ShellSession({
+          command: built.argv,
+          cwd: startCwd,
+          // The sandbox gets exactly the variables the mount policy allows;
+          // the parent's full environment, keys included, must not reach it.
+          env: {},
+          ...(options.timeoutMs === undefined
+            ? {}
+            : { timeoutMs: options.timeoutMs }),
+        });
+      },
+      () => this.verifyIsolation(),
       cwd,
-      // The sandbox gets exactly the variables the mount policy allows; the
-      // parent's full environment, keys included, must not reach it.
-      env: {},
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    });
+    );
   }
 
   /**
@@ -207,6 +210,83 @@ export class BwrapEnvironment implements ExecutionEnvironment {
   /** Whether the isolation self-check has passed in this session. */
   public get isolationVerified(): boolean {
     return this.#noNewPrivsVerified;
+  }
+}
+
+/** ExecutionSession wrapper that verifies isolation before every shell start. */
+export class VerifiedBwrapSession implements ExecutionSession {
+  readonly #create: (cwd: string) => Promise<ExecutionSession>;
+  readonly #verify: () => Promise<IsolationReport>;
+  #cwd: string;
+  #session: ExecutionSession | undefined;
+  #opening: Promise<ExecutionSession> | undefined;
+  #closed = false;
+
+  public constructor(
+    create: (cwd: string) => Promise<ExecutionSession>,
+    verify: () => Promise<IsolationReport>,
+    cwd: string,
+  ) {
+    this.#create = create;
+    this.#verify = verify;
+    this.#cwd = cwd;
+  }
+
+  public get currentDirectory(): string {
+    return this.#session?.currentDirectory ?? this.#cwd;
+  }
+
+  public get running(): boolean {
+    return this.#session?.running ?? false;
+  }
+
+  public async execute(
+    command: string,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ) {
+    if (this.#closed) throw new BwrapUnavailableError('Sandbox session is closed.');
+    let opening = this.#opening;
+    if (this.#session === undefined && opening === undefined) {
+      opening = this.#start(this.#cwd);
+      this.#opening = opening;
+      void opening.catch(() => undefined);
+    }
+    const session = this.#session ?? (opening === undefined ? undefined : await opening);
+    if (session === undefined) {
+      throw new BwrapUnavailableError('Sandbox session did not start.');
+    }
+    return await session.execute(command, timeoutMs, signal);
+  }
+
+  public restart(): void {
+    if (this.#closed) return;
+    const cwd = this.currentDirectory;
+    this.#session?.close();
+    this.#session = undefined;
+    this.#opening = this.#start(cwd);
+    void this.#opening.catch(() => undefined);
+  }
+
+  public close(): void {
+    this.#closed = true;
+    this.#session?.close();
+    this.#session = undefined;
+  }
+
+  async #start(cwd: string): Promise<ExecutionSession> {
+    const report = await this.#verify();
+    if (!report.ok) {
+      throw new BwrapUnavailableError(
+        `sandbox isolation could not be confirmed, so Atlas will not start it: ${report.detail}`,
+      );
+    }
+    if (this.#closed) throw new BwrapUnavailableError('Sandbox session is closed.');
+    const session = await this.#create(cwd);
+    session.restart();
+    this.#cwd = cwd;
+    this.#session = session;
+    return session;
   }
 }
 
