@@ -77,14 +77,17 @@ import {
 } from '../permissions/autonomy.js';
 import {
   InitWizard,
-  PROVIDER_OPTIONS,
   maskKey,
   providerRows,
   type WizardStep,
-  CUSTOM_ENDPOINT,
 } from './components/InitWizard.js';
 import { fuzzyFilter } from './fuzzy.js';
-import { protocolFor } from '../providers/model-registry.js';
+import {
+  resolveWizardConfig,
+  resolveWizardSelection,
+  wizardStepForSelection,
+  type WizardSelection,
+} from './wizard-logic.js';
 import { StatusFooter } from './components/StatusFooter.js';
 import type { ToolBlockView } from './components/ToolBlock.js';
 import type { GateDecision, TuiBridge } from './bridge.js';
@@ -134,11 +137,22 @@ export interface AtlasAppProps {
   readonly resumed?: boolean;
   /** Known context window; omitted rather than guessed. */
   readonly contextWindow?: number | undefined;
-  /** Validates a provider key. Kept injectable so tests never hit a network. */
-  readonly validateKey?: (
-    provider: string,
-    key: string,
-  ) => Promise<{ ok: boolean; message?: string }>;
+  /**
+   * Validates a provider key against the config it would be saved with.
+   *
+   * Kept injectable so tests never hit a network. `warning` carries the
+   * accepted-no-balance case: the key is good, the account is empty.
+   */
+  readonly validateKey?: (input: {
+    readonly provider: string;
+    readonly apiKey: string;
+    readonly baseUrl: string;
+    readonly model: string;
+  }) => Promise<{
+    ok: boolean;
+    message?: string;
+    warning?: string;
+  }>;
   /** Persists a validated configuration. */
   readonly saveConfig?: (input: {
     provider: string;
@@ -201,6 +215,10 @@ export function AtlasApp({
   const [wizardMessage, setWizardMessage] = useState<string | undefined>(
     undefined,
   );
+  /** The model a successful /init saved, so the done line shows the truth. */
+  const [wizardSavedModel, setWizardSavedModel] = useState<string | undefined>(
+    undefined,
+  );
   const [wizardQuery, setWizardQuery] = useState('');
   const [wizardIndex, setWizardIndex] = useState(0);
   const [wizardEndpoint, setWizardEndpoint] = useState('');
@@ -228,12 +246,9 @@ export function AtlasApp({
     };
   }, [runtime.assistantConfig.homeDirectory]);
   /** The vendor chosen from the list, before a key is entered. */
-  const [wizardSelected, setWizardSelected] = useState<{
-    id: string;
-    label: string;
-    baseUrl?: string | undefined;
-    protocol?: 'openai-compatible' | 'anthropic-compatible' | undefined;
-  } | null>(null);
+  const [wizardSelected, setWizardSelected] = useState<WizardSelection | null>(
+    null,
+  );
 
   const [registry, setRegistry] = useState<RegistrySnapshot>({
     providers: [],
@@ -628,6 +643,8 @@ export function AtlasApp({
           setWizardQuery('');
           setWizardIndex(0);
           setWizardEndpoint('');
+          setWizardMessage(undefined);
+          setWizardSavedModel(undefined);
           setModal('init');
           return;
         }
@@ -681,6 +698,8 @@ export function AtlasApp({
           // Enter, so typing a filter there was silently discarded.
           setWizardStep('search');
           setWizardKey('');
+          setWizardMessage(undefined);
+          setWizardSavedModel(undefined);
           setModal('init');
         }
         return;
@@ -755,55 +774,73 @@ export function AtlasApp({
     if (wizardStep === 'search' || wizardStep === 'provider') {
       if (chosen === undefined) return;
       const vendor = registry.providers.find((p) => p.id === chosen.id);
-      setWizardSelected({
-        id: chosen.id,
-        label: chosen.label,
-        baseUrl: vendor?.baseUrl,
-        // Undefined protocol means genuinely unknown, so the UI asks rather
-        // than guessing a wire format.
-        protocol: vendor === undefined ? undefined : protocolFor(vendor),
-      });
-      // A provider the dataset has no endpoint for needs one typed in before a
-      // key can be validated against it.
-      setWizardStep(chosen.id === CUSTOM_ENDPOINT ? 'endpoint' : 'key');
+      const selection = resolveWizardSelection(chosen, vendor);
+      setWizardSelected(selection);
+      // A vendor with no endpoint anywhere — including the custom row —
+      // needs one typed in before a key can be validated against it.
+      setWizardStep(wizardStepForSelection(selection));
       return;
     }
     if (wizardStep === 'endpoint') {
-      if (wizardEndpoint.trim() === '') return;
+      const typed = wizardEndpoint.trim();
+      if (typed === '') return;
+      try {
+        const parsed = new URL(typed);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          throw new Error('unsupported URL protocol');
+        }
+      } catch {
+        setWizardMessage('base URL must be a full http:// or https:// address');
+        setWizardStep('failed');
+        return;
+      }
       setWizardStep('key');
       return;
     }
     if (wizardStep !== 'key' || wizardKey === '') return;
     setWizardStep('validating');
-    // A custom endpoint is OpenAI-compatible unless the user says otherwise,
-    // because that is what nearly every self-hosted gateway speaks.
-    const provider = wizardSelected?.protocol ?? runtime.config.provider;
-    const model =
-      wizardSelected?.id === CUSTOM_ENDPOINT
-        ? wizardEndpoint
-        : (PROVIDER_OPTIONS[wizardProvider]?.defaultModel ??
-          wizardSelected?.id ??
-          runtime.config.model);
+    // The config validated here is the config saved: the picked vendor's
+    // endpoint and top model, or the typed endpoint with its protocol and a
+    // model recovered for it — never the current session's leftovers.
+    const resolution = resolveWizardConfig({
+      selection: wizardSelected,
+      typedEndpoint: wizardEndpoint,
+      providers: registry.providers,
+      fallbackProvider: runtime.config.provider,
+    });
+    if (resolution === undefined) {
+      // The endpoint step exists to prevent this; if state got here anyway,
+      // ask rather than validate against a stale base URL.
+      setWizardMessage('the provider has no endpoint — enter a base URL');
+      setWizardStep('failed');
+      return;
+    }
     if (validateKey === undefined) {
       setWizardStep('done');
       return;
     }
-    const result = await validateKey(provider, wizardKey);
+    const result = await validateKey({
+      provider: resolution.provider,
+      apiKey: wizardKey,
+      baseUrl: resolution.baseUrl,
+      model: resolution.model,
+    });
     if (result.ok) {
       if (saveConfig !== undefined) {
         await saveConfig({
-          provider,
+          provider: resolution.provider,
           apiKey: wizardKey,
-          model,
-          ...(wizardSelected?.id === CUSTOM_ENDPOINT &&
-          wizardEndpoint.trim() !== ''
-            ? { baseUrl: wizardEndpoint.trim() }
-            : {}),
+          model: resolution.model,
+          // Always saved now: the endpoint the key was proven against is the
+          // endpoint the config must point at.
+          baseUrl: resolution.baseUrl,
         });
       }
       // Drop the secret as soon as it is no longer needed.
       setWizardKey('');
-      setWizardMessage(undefined);
+      setWizardSavedModel(resolution.model);
+      // Carries the accepted-no-balance warning; undefined stays silent.
+      setWizardMessage(result.warning);
       setWizardStep('done');
       return;
     }
@@ -812,7 +849,11 @@ export function AtlasApp({
   }, [
     wizardStep,
     wizardKey,
-    wizardProvider,
+    wizardEndpoint,
+    wizardSelected,
+    wizardRows,
+    wizardIndex,
+    registry.providers,
     runtime.config.provider,
     validateKey,
     saveConfig,
@@ -995,7 +1036,11 @@ export function AtlasApp({
           step={wizardStep}
           providerIndex={wizardProvider}
           selectedLabel={wizardRows[wizardIndex]?.label}
-          model={model}
+          model={
+            wizardStep === 'done' && wizardSavedModel !== undefined
+              ? wizardSavedModel
+              : model
+          }
           maskedKey={maskKey(wizardKey)}
           message={wizardMessage}
           rows={wizardRows}

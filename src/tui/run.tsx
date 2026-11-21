@@ -11,7 +11,7 @@ import { render, type Instance } from 'ink';
 import { createAssistantRuntime } from '../conversation/assistant-runtime.js';
 import type { ExecutionStatus } from '../execution/environment.js';
 import { saveConfig, getDefaultConfigPath } from '../config/config.js';
-import { createProvider } from '../providers/provider-factory.js';
+import { validateApiKey } from '../providers/key-validation.js';
 import type { LoadConfigOptions } from '../config/config.js';
 import type { ConfigOverrides } from '../config/config.schema.js';
 import { colorEnabled } from './theme.js';
@@ -123,32 +123,39 @@ export async function runTui({
         animate
         resumed={runtime.resumedConversationId !== undefined}
         {...(contextWindow === undefined ? {} : { contextWindow })}
-        validateKey={async (provider, key) => {
-          // A minimal probe: one tiny completion proves the key is accepted
-          // before anything is written, so a bad key cannot leave a config file
-          // that fails on the next launch. The key is never logged.
-          try {
-            const probe = createProvider({
-              ...runtime.config,
-              provider:
-                provider === 'anthropic-compatible'
-                  ? 'anthropic-compatible'
-                  : 'openai-compatible',
-              apiKey: key,
-              maxTokens: 1,
-            });
-            await probe.chatCompletion({
-              model: runtime.config.model,
-              messages: [{ role: 'user', content: 'ping' }],
-              maxTokens: 1,
-            });
-            return { ok: true };
-          } catch (error) {
+        validateKey={async ({ provider, apiKey, baseUrl, model }) => {
+          // The probe hits the endpoint being configured — the models list
+          // first (free, spends no tokens), a one-token completion only as
+          // fallback — and answers three ways: accepted, accepted with an
+          // empty account, rejected. Nothing is written until a verdict
+          // arrives, so a bad key cannot leave a config file that fails on
+          // the next launch. The key is never logged.
+          const result = await validateApiKey({
+            provider:
+              provider === 'anthropic-compatible'
+                ? 'anthropic-compatible'
+                : 'openai-compatible',
+            apiKey,
+            baseUrl,
+            model,
+          });
+          if (result.status === 'rejected') {
             return {
               ok: false,
-              message: error instanceof Error ? error.message : String(error),
+              ...(result.message === undefined
+                ? {}
+                : { message: result.message }),
             };
           }
+          if (result.status === 'accepted-no-balance') {
+            return {
+              ok: true,
+              ...(result.message === undefined
+                ? {}
+                : { warning: result.message }),
+            };
+          }
+          return { ok: true };
         }}
         saveConfig={async ({ provider, apiKey, model, baseUrl }) => {
           await saveConfig(

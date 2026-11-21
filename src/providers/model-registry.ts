@@ -23,6 +23,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { DEFAULT_BASE_URLS } from '../config/config.schema.js';
+
 /** The one endpoint Atlas needs. Kept here so it can be overridden in tests. */
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
 
@@ -177,9 +179,40 @@ export function parseRegistry(raw: unknown): ProviderInfo[] {
  */
 export function protocolFor(provider: ProviderInfo): AtlasProtocol | undefined {
   if (provider.baseUrl === undefined) return undefined;
-  return /anthropic/i.test(provider.baseUrl)
-    ? 'anthropic-compatible'
-    : 'openai-compatible';
+  return protocolFromUrl(provider.baseUrl);
+}
+
+/** The protocol an endpoint URL speaks, from its shape. */
+export function protocolFromUrl(url: string): AtlasProtocol {
+  return /anthropic/i.test(url) ? 'anthropic-compatible' : 'openai-compatible';
+}
+
+/**
+ * The endpoint for a vendor, when the dataset states one or Atlas knows it.
+ *
+ * Most vendors carry their endpoint in the dataset. The two Atlas already
+ * knows by name (openai, anthropic) get the same defaults the rest of the
+ * config system uses; any other vendor with no stated endpoint returns
+ * `undefined` so the caller asks rather than guessing a URL.
+ */
+export function vendorEndpoint(vendor: ProviderInfo): string | undefined {
+  if (vendor.baseUrl !== undefined) return vendor.baseUrl;
+  if (vendor.id === 'openai') return DEFAULT_BASE_URLS['openai-compatible'];
+  if (vendor.id === 'anthropic') {
+    return DEFAULT_BASE_URLS['anthropic-compatible'];
+  }
+  return undefined;
+}
+
+/** The registry vendor that serves `url`, if one states it. */
+export function vendorForUrl(
+  providers: readonly ProviderInfo[],
+  url: string,
+): ProviderInfo | undefined {
+  const needle = url.replace(/\/+$/, '');
+  return providers.find(
+    (vendor) => vendorEndpoint(vendor)?.replace(/\/+$/, '') === needle,
+  );
 }
 
 /** Both protocols, for presenting a choice when inference is not possible. */

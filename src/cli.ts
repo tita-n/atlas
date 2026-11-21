@@ -44,6 +44,8 @@ import {
   loadRegistry,
   readBundledCache,
   refreshRegistry,
+  vendorEndpoint,
+  vendorForUrl,
   type ProviderInfo,
 } from './providers/model-registry.js';
 import { formatTokens } from './tui/tool-blocks.js';
@@ -329,34 +331,6 @@ async function promptSecret(label: string): Promise<string> {
 async function confirm(question: string): Promise<boolean> {
   const answer = (await promptText(question)).toLowerCase();
   return answer === 'y' || answer === 'yes';
-}
-
-/**
- * The endpoint for a vendor, when the dataset states one or Atlas knows it.
- *
- * Most vendors carry their endpoint in the dataset. The two Atlas already
- * knows by name (openai, anthropic) get the same defaults the rest of the
- * config system uses; any other vendor with no stated endpoint stays out of
- * the menu rather than appearing with a guessed URL.
- */
-function vendorEndpoint(vendor: ProviderInfo): string | undefined {
-  if (vendor.baseUrl !== undefined) return vendor.baseUrl;
-  if (vendor.id === 'openai') return DEFAULT_BASE_URLS['openai-compatible'];
-  if (vendor.id === 'anthropic') {
-    return DEFAULT_BASE_URLS['anthropic-compatible'];
-  }
-  return undefined;
-}
-
-/** The registry vendor that serves `url`, if one states it. */
-function vendorForUrl(
-  providers: readonly ProviderInfo[],
-  url: string,
-): ProviderInfo | undefined {
-  const needle = url.replace(/\/+$/, '');
-  return providers.find(
-    (vendor) => vendorEndpoint(vendor)?.replace(/\/+$/, '') === needle,
-  );
 }
 
 /**
