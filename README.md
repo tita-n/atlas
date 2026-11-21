@@ -209,7 +209,11 @@ atlas config init
 atlas config init --force --provider openai-compatible --model gpt-4.1-mini
 ```
 
-The initializer prompts for the API key without echoing it.
+The initializer lists the wire formats first, then the providers that state an
+endpoint for the chosen one, then that provider's models with context and
+price — every prompt accepts either a listed number or a typed value, and the
+lists come from the catalogue shipped with the install, so the whole flow works
+on a first run with no network. The API key prompt does not echo it.
 
 ## Memory and history commands
 
@@ -640,9 +644,13 @@ plain text otherwise, so pipes and CI are unaffected. See
 ### Provider and model metadata
 
 Model names, context windows, and pricing come from
-[models.dev](https://models.dev), fetched on demand and cached on disk, so a new
-model needs no code change. Tag stripping for reasoning models runs for every
-model regardless, because the dataset is community-maintained and has gaps.
+[models.dev](https://models.dev): a copy ships with the install, is cached on
+disk, and is refreshed on demand, so a new model needs no code change and the
+list is there even on a first run with no network. The catalogue is MIT
+licensed; its notice ships at `assets/models-dev-LICENSE`, and `atlas models`
+lists every provider and model from the command line. Tag stripping for
+reasoning models runs for every model regardless, because the dataset is
+community-maintained and has gaps.
 
 ## Boundaries
 

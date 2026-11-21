@@ -59,7 +59,13 @@ describe('ConfirmationFlow', () => {
   });
 
   it('supports approve and deny paths for Tier 2', async () => {
-    const approve = vi.fn().mockResolvedValue(true);
+    // These stand in for a HUMAN answering, so they report `asked` the way the
+    // real prompt does. A mock that stays silent is read as "nobody was asked",
+    // which is the conservative default and the point of the change.
+    const approve = vi.fn((_r: unknown, markAsked?: (v: boolean) => void) => {
+      markAsked?.(true);
+      return Promise.resolve(true);
+    });
     const approvedFlow = new ConfirmationFlow({
       provider,
       model: 'mock',
@@ -70,9 +76,16 @@ describe('ConfirmationFlow', () => {
     expect(approved.approved).toBe(true);
     expect(approve).toHaveBeenCalledWith(
       expect.objectContaining({ phrase: 'ATLAS CONFIRM' }),
+      // The second argument is how the implementation reports that it put the
+      // question to a human, so the audit trail can distinguish an asked
+      // approval from a block-mode refusal.
+      expect.any(Function),
     );
 
-    const deny = vi.fn().mockResolvedValue(false);
+    const deny = vi.fn((_r: unknown, markAsked?: (v: boolean) => void) => {
+      markAsked?.(true);
+      return Promise.resolve(false);
+    });
     const deniedFlow = new ConfirmationFlow({
       provider,
       model: 'mock',

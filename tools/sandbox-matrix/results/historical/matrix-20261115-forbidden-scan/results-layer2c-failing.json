@@ -1,0 +1,118 @@
+[
+  {
+    "id": "C04/chat/confirm-everything",
+    "cell": "C04",
+    "title": "bwrap exits nonzero at startup",
+    "frontend": "chat",
+    "autonomy": "confirm-everything",
+    "respond": "approve",
+    "command": "echo failclosed > /work/C04-chat-confirm-everything/failclosed.txt && echo WROTE",
+    "verdict": "PASS",
+    "findings": [],
+    "toolCalls": 1,
+    "expected": "refused-degraded",
+    "actual": "refused-degraded",
+    "rows": [
+      {
+        "decision": "blocked",
+        "gate_path": "refused-degraded",
+        "outcome": "denied",
+        "sandbox_backend": "refusing",
+        "sandbox_profile": "read-only",
+        "escalated": 0,
+        "risk_tier": 3,
+        "matched_rule": "info-shell-redirect"
+      }
+    ],
+    "exit": 0,
+    "stdout": "SANDBOX UNAVAILABLE (refusing, degraded) | profile: read-only | writable: none | network: off | seccomp: off -- sandbox unavailable: bubblewrap is installed but cannot create a sandbox on this host: bwrap: setting up uid map: Permission denied\nCreated a starter personality at /fakehome/atlas-C04-chat-confirm-everything/personality.md. Edit it to change how Atlas sounds.\n\nHeads up: voice pairing is paused, so a dangerous command in text mode is confirmed by the typed safe word alone. This is weaker than the original design and is temporary. Set ATLAS_TEXT_CONFIRM_MODE=block to refuse dangerous commands until voice returns.\n\nStarted a new conversation. This is saved; run atlas again to resume.\nType /help for commands, /exit or Ctrl+D to quit.\n\natlas> atlas: Before calling this done, some claims did not hold up:\n  - not supported by this turn's record: \"done\"\n\nSo treat the above as unconfirmed, not finished.\n\ndone\n\n--- execution detail ---\n$ echo failclosed > /work/C04-chat-confirm-everything/failclosed.txt && echo WROTE\nAtlas is refusing this command because no sandbox is available, so it will\nnot run an arbitrary command directly on your computer.\nReason: the environment is in the r…[+617]",
+    "stderr": ""
+  },
+  {
+    "id": "C04/chat/unattended",
+    "cell": "C04",
+    "title": "bwrap exits nonzero at startup",
+    "frontend": "chat",
+    "autonomy": "unattended",
+    "respond": "approve",
+    "command": "echo failclosed > /work/C04-chat-unattended/failclosed.txt && echo WROTE",
+    "verdict": "PASS",
+    "findings": [],
+    "toolCalls": 1,
+    "expected": "refused-degraded",
+    "actual": "refused-degraded",
+    "rows": [
+      {
+        "decision": "blocked",
+        "gate_path": "refused-degraded",
+        "outcome": "denied",
+        "sandbox_backend": "refusing",
+        "sandbox_profile": "read-only",
+        "escalated": 0,
+        "risk_tier": 3,
+        "matched_rule": "info-shell-redirect"
+      }
+    ],
+    "exit": 0,
+    "stdout": "SANDBOX UNAVAILABLE (refusing, degraded) | profile: read-only | writable: none | network: off | seccomp: off -- sandbox unavailable: bubblewrap is installed but cannot create a sandbox on this host: bwrap: setting up uid map: Permission denied\nCreated a starter personality at /fakehome/atlas-C04-chat-unattended/personality.md. Edit it to change how Atlas sounds.\n\nHeads up: voice pairing is paused, so a dangerous command in text mode is confirmed by the typed safe word alone. This is weaker than the original design and is temporary. Set ATLAS_TEXT_CONFIRM_MODE=block to refuse dangerous commands until voice returns.\n\nStarted a new conversation. This is saved; run atlas again to resume.\nType /help for commands, /exit or Ctrl+D to quit.\n\natlas> atlas: Before calling this done, some claims did not hold up:\n  - not supported by this turn's record: \"done\"\n\nSo treat the above as unconfirmed, not finished.\n\ndone\n\n--- execution detail ---\n$ echo failclosed > /work/C04-chat-unattended/failclosed.txt && echo WROTE\nAtlas is refusing this command because no sandbox is available, so it will\nnot run an arbitrary command directly on your computer.\nReason: the environment is in the refusing state an…[+601]",
+    "stderr": ""
+  },
+  {
+    "id": "C04/tui/confirm-everything",
+    "cell": "C04",
+    "title": "bwrap exits nonzero at startup",
+    "frontend": "tui",
+    "autonomy": "confirm-everything",
+    "respond": "approve",
+    "command": "echo failclosed > /work/C04-tui-confirm-everything/failclosed.txt && echo WROTE",
+    "verdict": "PASS",
+    "findings": [],
+    "toolCalls": 1,
+    "expected": "refused-degraded",
+    "actual": "refused-degraded",
+    "rows": [
+      {
+        "decision": "blocked",
+        "gate_path": "refused-degraded",
+        "outcome": "denied",
+        "sandbox_backend": "refusing",
+        "sandbox_profile": "read-only",
+        "escalated": 0,
+        "risk_tier": 3,
+        "matched_rule": "info-shell-redirect"
+      }
+    ],
+    "exit": 0,
+    "stdout": "SANDBOX UNAVAILABLE (refusing, degraded) | profile: read-only | writable: none | network: off | seccomp: off -- sandbox unavailable: bubblewrap is installed but cannot create a sandbox on this host: bwrap: setting up uid map: Permission denied\n\u001b[?2026h\u001b[1m\u001b[38;5;231mATLAS\u001b[39m\u001b[22m\n\n\u001b[38;5;203m█▀▀ █▀▀ █▄ █   █▀▀\u001b[39m\n\n\u001b[38;5;203m█▄▄ █▄▄ █ ▀█   █▄▄\u001b[39m\n\n\u001b[38;5;203m▀  ▀ █  █ █  █ █  ▀\u001b[39m\n\n\u001b[38;5;145mpersonal assistant\u001b[38;5;102m  ·  run atlas chat for plain text\u001b[39m\n\nCreated a starter personality at\n/fakehome/atlas-C04-tui-confirm-everything/personality.md. Edit it to change how\n Atlas sounds.\n\nHeads up: voice pairing is paused, so a dangerous command in text mode is\nconfirmed by the typed safe word alone. This is weaker than the original design\nand is temporary. Set ATLAS_TEXT_CONFIRM_MODE=block to refuse dangerous commands\n until voice returns.\n\n\u001b[38;5;145mStarted a new conversation.\u001b[39m\n\n\u001b[?25l\n\u001b[38;5;145m· \u001b[39m \u001b[1m\u001b[38;5;145mIDLE\u001b[39m\u001b[22m\n\u001b[38;5;221mUNSANDBOXED (refusing): no isolation. — sandbox unavailable: bubblewrap is \u001b[39m\n\u001b[38;5;221minstalled but cannot cre…\u001b[39m\n\n\u001b[1m\u001b[38;5;203matlas  \u001b[39m\u001b[22m▌\n\n\u001b[38;5;102mopenai-compatible/mock  ·  0 turns  ·  0 tool calls  ·  …[+601672]",
+    "stderr": ""
+  },
+  {
+    "id": "C04/tui/unattended",
+    "cell": "C04",
+    "title": "bwrap exits nonzero at startup",
+    "frontend": "tui",
+    "autonomy": "unattended",
+    "respond": "approve",
+    "command": "echo failclosed > /work/C04-tui-unattended/failclosed.txt && echo WROTE",
+    "verdict": "PASS",
+    "findings": [],
+    "toolCalls": 1,
+    "expected": "refused-degraded",
+    "actual": "refused-degraded",
+    "rows": [
+      {
+        "decision": "blocked",
+        "gate_path": "refused-degraded",
+        "outcome": "denied",
+        "sandbox_backend": "refusing",
+        "sandbox_profile": "read-only",
+        "escalated": 0,
+        "risk_tier": 3,
+        "matched_rule": "info-shell-redirect"
+      }
+    ],
+    "exit": 0,
+    "stdout": "SANDBOX UNAVAILABLE (refusing, degraded) | profile: read-only | writable: none | network: off | seccomp: off -- sandbox unavailable: bubblewrap is installed but cannot create a sandbox on this host: bwrap: setting up uid map: Permission denied\n\u001b[?2026h\u001b[1m\u001b[38;5;231mATLAS\u001b[39m\u001b[22m\n\n\u001b[38;5;203m█▀▀ █▀▀ █▄ █   █▀▀\u001b[39m\n\n\u001b[38;5;203m█▄▄ █▄▄ █ ▀█   █▄▄\u001b[39m\n\n\u001b[38;5;203m▀  ▀ █  █ █  █ █  ▀\u001b[39m\n\n\u001b[38;5;145mpersonal assistant\u001b[38;5;102m  ·  run atlas chat for plain text\u001b[39m\n\nCreated a starter personality at\n/fakehome/atlas-C04-tui-unattended/personality.md. Edit it to change how Atlas\nsounds.\n\nHeads up: voice pairing is paused, so a dangerous command in text mode is\nconfirmed by the typed safe word alone. This is weaker than the original design\nand is temporary. Set ATLAS_TEXT_CONFIRM_MODE=block to refuse dangerous commands\n until voice returns.\n\n\u001b[38;5;145mStarted a new conversation.\u001b[39m\n\n\u001b[?25l\n\u001b[38;5;145m· \u001b[39m \u001b[1m\u001b[38;5;145mIDLE\u001b[39m\u001b[22m\n\u001b[38;5;221mUNSANDBOXED (refusing): no isolation. — sandbox unavailable: bubblewrap is \u001b[39m\n\u001b[38;5;221minstalled but cannot cre…\u001b[39m\n\n\u001b[1m\u001b[38;5;203matlas  \u001b[39m\u001b[22m▌\n\n\u001b[38;5;102mopenai-compatible/mock  ·  0 turns  ·  0 tool calls  ·  0 tokens\u001b…[+602847]",
+    "stderr": ""
+  }
+]

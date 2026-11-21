@@ -82,7 +82,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 /** One extra request when the provider returns a structurally invalid body. */
 const SCHEMA_RETRY_ATTEMPTS = 1;
 const DEFAULT_MAX_TOKENS = 4_096;
-const ANTHROPIC_VERSION = '2023-06-01';
+export const ANTHROPIC_VERSION = '2023-06-01';
 
 function endpoint(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/messages`;

@@ -1,0 +1,818 @@
+guard check: GUARD REFUSED: REFUSING: real repo resolves to /home/titan/atlas, inside the real repository (/home/titan/atlas). The harness only operates on a disposable copy; point it at /home/titan/atlas-evidence-20261113/run instead.
+
+>>> outer container: layer1
+layer1: 61 cells x 2 profiles
+(node:2) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  L1 A01 [read-only] PASS
+  L1 A01 [workspace-write] PASS
+  L1 A02 [read-only] PASS
+  L1 A02 [workspace-write] PASS
+  L1 A03 [read-only] PASS
+  L1 A03 [workspace-write] PASS
+  L1 A04 [read-only] PASS
+  L1 A04 [workspace-write] PASS
+  L1 A05 [read-only] PASS
+  L1 A05 [workspace-write] PASS
+  L1 A06 [read-only] PASS
+  L1 A06 [workspace-write] PASS
+  L1 A07 [read-only] PASS
+  L1 A07 [workspace-write] PASS
+  L1 A08 [read-only] PASS
+  L1 A08 [workspace-write] PASS
+  L1 A09 [read-only] PASS
+  L1 A09 [workspace-write] PASS
+  L1 A10 [read-only] PASS
+  L1 A10 [workspace-write] PASS
+  L1 A11 [read-only] PASS
+  L1 A11 [workspace-write] PASS
+  L1 A12 [read-only] PASS
+  L1 A12 [workspace-write] PASS
+  L1 A13 [read-only] PASS
+  L1 A13 [workspace-write] PASS
+  L1 A14 [read-only] PASS
+  L1 A14 [workspace-write] PASS
+  L1 A15 [read-only] PASS
+  L1 A15 [workspace-write] PASS
+  L1 A16 [read-only] PASS
+  L1 A16 [workspace-write] PASS
+  L1 B01 [read-only] PASS
+  L1 B01 [workspace-write] PASS
+  L1 B02 [read-only] PASS
+  L1 B02 [workspace-write] PASS
+  L1 B03 [read-only] PASS
+  L1 B03 [workspace-write] PASS
+  L1 B04 [read-only] PASS
+  L1 B04 [workspace-write] PASS
+  L1 B05 [read-only] PASS
+  L1 B05 [workspace-write] PASS
+  L1 B06 [read-only] PASS
+  L1 B06 [workspace-write] PASS
+  L1 B07 [read-only] PASS
+  L1 B07 [workspace-write] PASS
+  L1 B08 [read-only] PASS
+  L1 B08 [workspace-write] PASS
+  L1 B09 [read-only] PASS
+  L1 B09 [workspace-write] PASS
+  L1 B10 [read-only] PASS
+  L1 B10 [workspace-write] PASS
+  L1 B11 [read-only] PASS
+  L1 B11 [workspace-write] PASS
+  L1 B12 [read-only] PASS
+  L1 B12 [workspace-write] PASS
+  L1 B13 [read-only] PASS
+  L1 B13 [workspace-write] PASS
+  L1 B14 [read-only] PASS
+  L1 B14 [workspace-write] PASS
+  L1 B15 [read-only] PASS
+  L1 B15 [workspace-write] PASS
+  L1 B16 [read-only] PASS
+  L1 B16 [workspace-write] PASS
+  L1 B17 [read-only] PASS
+  L1 B17 [workspace-write] PASS
+  L1 B18 [read-only] PASS
+  L1 B18 [workspace-write] PASS
+  L1 B19 [read-only] PASS
+  L1 B19 [workspace-write] PASS
+  L1 B20 [read-only] PASS
+  L1 B20 [workspace-write] PASS
+  L1 B21 [read-only] PASS
+  L1 B21 [workspace-write] PASS
+  L1 B22 [read-only] PASS
+  L1 B22 [workspace-write] PASS
+  L1 B23 [read-only] PASS
+  L1 B23 [workspace-write] PASS
+  L1 B24 [read-only] PASS
+  L1 B24 [workspace-write] PASS
+  L1 B25 [read-only] PASS
+  L1 B25 [workspace-write] PASS
+  L1 B26 [read-only] PASS
+  L1 B26 [workspace-write] PASS
+  L1 B27 [read-only] PASS
+  L1 B27 [workspace-write] PASS
+  L1 B28 [read-only] PASS
+  L1 B28 [workspace-write] PASS
+  L1 B29 [read-only] PASS
+  L1 B29 [workspace-write] PASS
+  L1 B30 [read-only] PASS
+  L1 B30 [workspace-write] PASS
+  L1 D01 [read-only] PASS
+  L1 D01 [workspace-write] PASS
+  L1 D02 [read-only] PASS
+  L1 D02 [workspace-write] PASS
+  L1 D03 [read-only] PASS
+  L1 D03 [workspace-write] PASS
+  L1 D04 [read-only] PASS
+  L1 D04 [workspace-write] PASS
+  L1 D05 [read-only] PASS
+  L1 D05 [workspace-write] PASS
+  L1 H01 [read-only] PASS
+  L1 H01 [workspace-write] PASS
+  L1 E01 [read-only] PASS
+  L1 E01 [workspace-write] PASS
+  L1 E02 [read-only] PASS
+  L1 E02 [workspace-write] PASS
+  L1 E03 [read-only] PASS
+  L1 E03 [workspace-write] PASS
+  L1 E04 [read-only] PASS
+  L1 E04 [workspace-write] PASS
+  L1 E05 [read-only] PASS
+  L1 E05 [workspace-write] PASS
+  L1 E06 [read-only] PASS
+  L1 E06 [workspace-write] PASS
+  L1 E07 [read-only] PASS
+  L1 E07 [workspace-write] PASS
+  L1 E08 [read-only] PASS
+  L1 E08 [workspace-write] PASS
+  L1 E09 [read-only] PASS
+  L1 E09 [workspace-write] PASS
+wrote /evidence/results-layer1.json: {"PASS":122}
+<<< outer container layer1 exited 0
+
+================ LAYER 1 (122 executions) ================
+cell  profile          verdict  exec  exit  findings
+----  ---------------  -------  ----  ----  --------
+A01   read-only        PASS     true  0             
+A01   workspace-write  PASS     true  0             
+A02   read-only        PASS     true  0             
+A02   workspace-write  PASS     true  0             
+A03   read-only        PASS     true  0             
+A03   workspace-write  PASS     true  0             
+A04   read-only        PASS     true  0             
+A04   workspace-write  PASS     true  0             
+A05   read-only        PASS     true  0             
+A05   workspace-write  PASS     true  0             
+A06   read-only        PASS     true  0             
+A06   workspace-write  PASS     true  0             
+A07   read-only        PASS     true  0             
+A07   workspace-write  PASS     true  0             
+A08   read-only        PASS     true  1             
+A08   workspace-write  PASS     true  1             
+A09   read-only        PASS     true  0             
+A09   workspace-write  PASS     true  0             
+A10   read-only        PASS     true  1             
+A10   workspace-write  PASS     true  1             
+A11   read-only        PASS     true  1             
+A11   workspace-write  PASS     true  1             
+A12   read-only        PASS     true  0             
+A12   workspace-write  PASS     true  0             
+A13   read-only        PASS     true  127           
+A13   workspace-write  PASS     true  127           
+A14   read-only        PASS     true  1             
+A14   workspace-write  PASS     true  1             
+A15   read-only        PASS     true  1             
+A15   workspace-write  PASS     true  1             
+A16   read-only        PASS     true  1             
+A16   workspace-write  PASS     true  1             
+B01   read-only        PASS     true  0             
+B01   workspace-write  PASS     true  0             
+B02   read-only        PASS     true  0             
+B02   workspace-write  PASS     true  0             
+B03   read-only        PASS     true  0             
+B03   workspace-write  PASS     true  0             
+B04   read-only        PASS     true  0             
+B04   workspace-write  PASS     true  0             
+B05   read-only        PASS     true  0             
+B05   workspace-write  PASS     true  0             
+B06   read-only        PASS     true  0             
+B06   workspace-write  PASS     true  0             
+B07   read-only        PASS     true  0             
+B07   workspace-write  PASS     true  0             
+B08   read-only        PASS     true  0             
+B08   workspace-write  PASS     true  0             
+B09   read-only        PASS     true  0             
+B09   workspace-write  PASS     true  0             
+B10   read-only        PASS     true  0             
+B10   workspace-write  PASS     true  0             
+B11   read-only        PASS     true  0             
+B11   workspace-write  PASS     true  0             
+B12   read-only        PASS     true  0             
+B12   workspace-write  PASS     true  0             
+B13   read-only        PASS     true  0             
+B13   workspace-write  PASS     true  0             
+B14   read-only        PASS     true  0             
+B14   workspace-write  PASS     true  0             
+B15   read-only        PASS     true  0             
+B15   workspace-write  PASS     true  0             
+B16   read-only        PASS     true  0             
+B16   workspace-write  PASS     true  0             
+B17   read-only        PASS     true  0             
+B17   workspace-write  PASS     true  0             
+B18   read-only        PASS     true  0             
+B18   workspace-write  PASS     true  0             
+B19   read-only        PASS     true  0             
+B19   workspace-write  PASS     true  0             
+B20   read-only        PASS     true  0             
+B20   workspace-write  PASS     true  0             
+B21   read-only        PASS     true  0             
+B21   workspace-write  PASS     true  0             
+B22   read-only        PASS     true  0             
+B22   workspace-write  PASS     true  0             
+B23   read-only        PASS     true  0             
+B23   workspace-write  PASS     true  0             
+B24   read-only        PASS     true  0             
+B24   workspace-write  PASS     true  0             
+B25   read-only        PASS     true  0             
+B25   workspace-write  PASS     true  0             
+B26   read-only        PASS     true  0             
+B26   workspace-write  PASS     true  0             
+B27   read-only        PASS     true  0             
+B27   workspace-write  PASS     true  0             
+B28   read-only        PASS     true  0             
+B28   workspace-write  PASS     true  0             
+B29   read-only        PASS     true  0             
+B29   workspace-write  PASS     true  0             
+B30   read-only        PASS     true  0             
+B30   workspace-write  PASS     true  0             
+D01   read-only        PASS     true  0             
+D01   workspace-write  PASS     true  0             
+D02   read-only        PASS     true  0             
+D02   workspace-write  PASS     true  0             
+D03   read-only        PASS     true  0             
+D03   workspace-write  PASS     true  0             
+D04   read-only        PASS     true  0             
+D04   workspace-write  PASS     true  0             
+D05   read-only        PASS     true  0             
+D05   workspace-write  PASS     true  0             
+H01   read-only        PASS     true  0             
+H01   workspace-write  PASS     true  0             
+E01   read-only        PASS     true  0             
+E01   workspace-write  PASS     true  0             
+E02   read-only        PASS     true  0             
+E02   workspace-write  PASS     true  0             
+E03   read-only        PASS     true  0             
+E03   workspace-write  PASS     true  0             
+E04   read-only        PASS     true  0             
+E04   workspace-write  PASS     true  0             
+E05   read-only        PASS     true  0             
+E05   workspace-write  PASS     true  0             
+E06   read-only        PASS     true  0             
+E06   workspace-write  PASS     true  0             
+E07   read-only        PASS     true  0             
+E07   workspace-write  PASS     true  0             
+E08   read-only        PASS     true  0             
+E08   workspace-write  PASS     true  0             
+E09   read-only        PASS     true  0             
+E09   workspace-write  PASS     true  0             
+
+Layer 1 counts: {"PASS":122}
+
+>>> outer container: layer2
+layer2 (layer2): 210 runs
+(node:11) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  L2 A01 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A01 [chat/unattended] PASS ran-in-sandbox
+  L2 A01 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A01 [tui/unattended] PASS ran-in-sandbox
+  L2 A02 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A02 [chat/unattended] PASS ran-in-sandbox
+  L2 A02 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A02 [tui/unattended] PASS ran-in-sandbox
+  L2 A03 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A03 [chat/unattended] PASS ran-in-sandbox
+  L2 A03 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A03 [tui/unattended] PASS ran-in-sandbox
+  L2 A04 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A04 [chat/unattended] PASS ran-in-sandbox
+  L2 A04 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A04 [tui/unattended] PASS ran-in-sandbox
+  L2 A05 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A05 [chat/unattended] PASS ran-in-sandbox
+  L2 A05 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A05 [tui/unattended] PASS ran-in-sandbox
+  L2 A06 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A06 [chat/unattended] PASS ran-in-sandbox
+  L2 A06 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A06 [tui/unattended] PASS ran-in-sandbox
+  L2 A07 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A07 [chat/unattended] PASS ran-in-sandbox
+  L2 A07 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A07 [tui/unattended] PASS ran-in-sandbox
+  L2 A08 [chat/confirm-everything] PASS denied-by-floor
+  L2 A08 [chat/unattended] PASS denied-by-floor
+  L2 A08 [tui/confirm-everything] PASS denied-by-floor
+  L2 A08 [tui/unattended] PASS denied-by-floor
+  L2 A09 [chat/confirm-everything] PASS denied-by-floor
+  L2 A09 [chat/unattended] PASS denied-by-floor
+  L2 A09 [tui/confirm-everything] PASS denied-by-floor
+  L2 A09 [tui/unattended] PASS denied-by-floor
+  L2 A10 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A10 [chat/unattended] PASS ran-in-sandbox
+  L2 A10 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A10 [tui/unattended] PASS ran-in-sandbox
+  L2 A11 [chat/confirm-everything] PASS denied-by-floor
+  L2 A11 [chat/unattended] PASS denied-by-floor
+  L2 A11 [tui/confirm-everything] PASS denied-by-floor
+  L2 A11 [tui/unattended] PASS denied-by-floor
+  L2 A12 [chat/confirm-everything] PASS denied-by-floor
+  L2 A12 [chat/unattended] PASS denied-by-floor
+  L2 A12 [tui/confirm-everything] PASS denied-by-floor
+  L2 A12 [tui/unattended] PASS denied-by-floor
+  L2 A13 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 A13 [chat/unattended] PASS ran-in-sandbox
+  L2 A13 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 A13 [tui/unattended] PASS ran-in-sandbox
+  L2 A14 [chat/confirm-everything] PASS denied-by-floor
+  L2 A14 [chat/unattended] PASS denied-by-floor
+  L2 A14 [tui/confirm-everything] PASS denied-by-floor
+  L2 A14 [tui/unattended] PASS denied-by-floor
+  L2 A15 [chat/confirm-everything] PASS denied-by-floor
+  L2 A15 [chat/unattended] PASS denied-by-floor
+  L2 A15 [tui/confirm-everything] PASS denied-by-floor
+  L2 A15 [tui/unattended] PASS denied-by-floor
+  L2 A16 [chat/confirm-everything] PASS denied-by-floor
+  L2 A16 [chat/unattended] PASS denied-by-floor
+  L2 A16 [tui/confirm-everything] PASS denied-by-floor
+  L2 A16 [tui/unattended] PASS denied-by-floor
+  L2 B01 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B01 [chat/unattended] PASS ran-in-sandbox
+  L2 B01 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B01 [tui/unattended] PASS ran-in-sandbox
+  L2 B02 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B02 [chat/unattended] PASS ran-in-sandbox
+  L2 B02 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B02 [tui/unattended] PASS ran-in-sandbox
+  L2 B03 [chat/confirm-everything] PASS denied-by-floor
+  L2 B03 [chat/unattended] PASS denied-by-floor
+  L2 B03 [tui/confirm-everything] PASS denied-by-floor
+  L2 B03 [tui/unattended] PASS denied-by-floor
+  L2 B04 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B04 [chat/unattended] PASS ran-in-sandbox
+  L2 B04 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B04 [tui/unattended] PASS ran-in-sandbox
+  L2 B05 [chat/confirm-everything] PASS denied-by-floor
+  L2 B05 [chat/unattended] PASS denied-by-floor
+  L2 B05 [tui/confirm-everything] PASS denied-by-floor
+  L2 B05 [tui/unattended] PASS denied-by-floor
+  L2 B06 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B06 [chat/unattended] PASS ran-in-sandbox
+  L2 B06 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B06 [tui/unattended] PASS ran-in-sandbox
+  L2 B07 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B07 [chat/unattended] PASS ran-in-sandbox
+  L2 B07 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B07 [tui/unattended] PASS ran-in-sandbox
+  L2 B08 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B08 [chat/unattended] PASS ran-in-sandbox
+  L2 B08 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B08 [tui/unattended] PASS ran-in-sandbox
+  L2 B09 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B09 [chat/unattended] PASS ran-in-sandbox
+  L2 B09 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B09 [tui/unattended] PASS ran-in-sandbox
+  L2 B10 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B10 [chat/unattended] PASS ran-in-sandbox
+  L2 B10 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B10 [tui/unattended] PASS ran-in-sandbox
+  L2 B11 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B11 [chat/unattended] PASS ran-in-sandbox
+  L2 B11 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B11 [tui/unattended] PASS ran-in-sandbox
+  L2 B12 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B12 [chat/unattended] PASS ran-in-sandbox
+  L2 B12 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B12 [tui/unattended] PASS ran-in-sandbox
+  L2 B13 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B13 [chat/unattended] PASS ran-in-sandbox
+  L2 B13 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B13 [tui/unattended] PASS ran-in-sandbox
+  L2 B14 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B14 [chat/unattended] PASS ran-in-sandbox
+  L2 B14 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B14 [tui/unattended] PASS ran-in-sandbox
+  L2 B15 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B15 [chat/unattended] PASS ran-in-sandbox
+  L2 B15 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B15 [tui/unattended] PASS ran-in-sandbox
+  L2 B16 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B16 [chat/unattended] PASS ran-in-sandbox
+  L2 B16 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B16 [tui/unattended] PASS ran-in-sandbox
+  L2 B17 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B17 [chat/unattended] PASS ran-in-sandbox
+  L2 B17 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B17 [tui/unattended] PASS ran-in-sandbox
+  L2 B18 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B18 [chat/unattended] PASS ran-in-sandbox
+  L2 B18 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B18 [tui/unattended] PASS ran-in-sandbox
+  L2 B19 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B19 [chat/unattended] PASS ran-in-sandbox
+  L2 B19 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B19 [tui/unattended] PASS ran-in-sandbox
+  L2 B20 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B20 [chat/unattended] PASS ran-in-sandbox
+  L2 B20 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B20 [tui/unattended] PASS ran-in-sandbox
+  L2 B21 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B21 [chat/unattended] PASS ran-in-sandbox
+  L2 B21 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B21 [tui/unattended] PASS ran-in-sandbox
+  L2 B22 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B22 [chat/unattended] PASS ran-in-sandbox
+  L2 B22 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B22 [tui/unattended] PASS ran-in-sandbox
+  L2 B23 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B23 [chat/unattended] PASS ran-in-sandbox
+  L2 B23 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B23 [tui/unattended] PASS ran-in-sandbox
+  L2 B24 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B24 [chat/unattended] PASS ran-in-sandbox
+  L2 B24 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B24 [tui/unattended] PASS ran-in-sandbox
+  L2 B25 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B25 [chat/unattended] PASS ran-in-sandbox
+  L2 B25 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B25 [tui/unattended] PASS ran-in-sandbox
+  L2 B26 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B26 [chat/unattended] PASS ran-in-sandbox
+  L2 B26 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B26 [tui/unattended] PASS ran-in-sandbox
+  L2 B27 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B27 [chat/unattended] PASS ran-in-sandbox
+  L2 B27 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B27 [tui/unattended] PASS ran-in-sandbox
+  L2 B28 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B28 [chat/unattended] PASS ran-in-sandbox
+  L2 B28 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B28 [tui/unattended] PASS ran-in-sandbox
+  L2 B29 [chat/confirm-everything] FAIL ran-in-sandbox
+  L2 B29 [chat/unattended] FAIL ran-in-sandbox
+  L2 B29 [tui/confirm-everything] FAIL ran-in-sandbox
+  L2 B29 [tui/unattended] FAIL ran-in-sandbox
+  L2 B30 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 B30 [chat/unattended] PASS ran-in-sandbox
+  L2 B30 [tui/confirm-everything] PASS ran-in-sandbox
+  L2 B30 [tui/unattended] PASS ran-in-sandbox
+  L2 C01 [chat/confirm-everything] FAIL ran-in-sandbox
+  L2 C01 [chat/unattended] FAIL ran-in-sandbox
+  L2 C01 [tui/confirm-everything] FAIL ran-in-sandbox
+  L2 C01 [tui/unattended] FAIL ran-in-sandbox
+  L2 C02 [chat/confirm-everything] FAIL ran-in-sandbox
+  L2 C02 [chat/unattended] FAIL ran-in-sandbox
+  L2 C02 [tui/confirm-everything] FAIL ran-in-sandbox
+  L2 C02 [tui/unattended] FAIL ran-in-sandbox
+  L2 C03 [chat/confirm-everything] FAIL ran-in-sandbox
+  L2 C03 [chat/unattended] FAIL ran-in-sandbox
+  L2 C03 [tui/confirm-everything] FAIL ran-in-sandbox
+  L2 C03 [tui/unattended] FAIL ran-in-sandbox
+  L2 C04 [chat/confirm-everything] FAIL ran-in-sandbox
+  L2 C04 [chat/unattended] FAIL ran-in-sandbox
+  L2 C04 [tui/confirm-everything] FAIL ran-in-sandbox
+  L2 C04 [tui/unattended] FAIL ran-in-sandbox
+  L2 D01 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 D01 [chat/unattended] PASS ran-in-sandbox
+  L2 D02 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 D02 [chat/unattended] PASS ran-in-sandbox
+  L2 D03 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 D03 [chat/unattended] PASS ran-in-sandbox
+  L2 D04 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 D04 [chat/unattended] PASS ran-in-sandbox
+  L2 D05 [chat/confirm-everything] PASS ran-in-sandbox
+  L2 D05 [chat/unattended] PASS ran-in-sandbox
+wrote /evidence/results-layer2.json: {"PASS":190,"FAIL":20}
+<<< outer container layer2 exited 0
+
+>>> outer container: layer2c
+layer2 (layer2c): 4 runs
+(node:11) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  L2 C01 [chat/confirm-everything] PASS refused-degraded
+  L2 C01 [chat/unattended] PASS refused-degraded
+  L2 C01 [tui/confirm-everything] PASS refused-degraded
+  L2 C01 [tui/unattended] PASS refused-degraded
+wrote /evidence/results-layer2c.json: {"PASS":4}
+<<< outer container layer2c exited 0
+
+>>> outer container: layer2c
+layer2 (layer2c): 4 runs
+(node:11) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  L2 C02 [chat/confirm-everything] PASS refused-degraded
+  L2 C02 [chat/unattended] PASS refused-degraded
+  L2 C02 [tui/confirm-everything] PASS refused-degraded
+  L2 C02 [tui/unattended] PASS refused-degraded
+wrote /evidence/results-layer2c.json: {"PASS":4}
+<<< outer container layer2c exited 0
+
+>>> outer container: layer2c
+layer2 (layer2c): 4 runs
+(node:11) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  L2 C03 [chat/confirm-everything] PASS refused-degraded
+  L2 C03 [chat/unattended] PASS refused-degraded
+  L2 C03 [tui/confirm-everything] PASS refused-degraded
+  L2 C03 [tui/unattended] PASS refused-degraded
+wrote /evidence/results-layer2c.json: {"PASS":4}
+<<< outer container layer2c exited 0
+
+>>> outer container: layer2c
+layer2 (layer2c): 4 runs
+(node:11) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+  L2 C04 [chat/confirm-everything] PASS refused-degraded
+  L2 C04 [chat/unattended] PASS refused-degraded
+  L2 C04 [tui/confirm-everything] PASS refused-degraded
+  L2 C04 [tui/unattended] PASS refused-degraded
+wrote /evidence/results-layer2c.json: {"PASS":4}
+<<< outer container layer2c exited 0
+
+================ LAYER 2  (210 runs) ================
+cell  front-end  autonomy            verdict  calls  predicted        observed       
+----  ---------  ------------------  -------  -----  ---------------  ---------------
+A01   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A01   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A01   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A01   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A02   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A02   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A02   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A02   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A03   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A03   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A03   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A03   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A04   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A04   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A04   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A04   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A05   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A05   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A05   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A05   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A06   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A06   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A06   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A06   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A07   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A07   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A07   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A07   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A08   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A08   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A08   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A08   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+A09   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A09   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A09   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A09   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+A10   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A10   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A10   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A10   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A11   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A11   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A11   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A11   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+A12   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A12   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A12   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A12   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+A13   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A13   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A13   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+A13   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+A14   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A14   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A14   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A14   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+A15   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A15   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A15   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A15   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+A16   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A16   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+A16   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+A16   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+B01   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B01   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B01   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B01   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B02   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B02   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B02   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B02   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B03   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+B03   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+B03   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+B03   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+B04   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B04   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B04   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B04   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B05   chat       confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+B05   chat       unattended          PASS     1      denied-by-floor  denied-by-floor
+B05   tui        confirm-everything  PASS     1      denied-by-floor  denied-by-floor
+B05   tui        unattended          PASS     1      denied-by-floor  denied-by-floor
+B06   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B06   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B06   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B06   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B07   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B07   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B07   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B07   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B08   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B08   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B08   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B08   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B09   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B09   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B09   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B09   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B10   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B10   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B10   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B10   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B11   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B11   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B11   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B11   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B12   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B12   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B12   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B12   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B13   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B13   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B13   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B13   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B14   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B14   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B14   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B14   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B15   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B15   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B15   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B15   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B16   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B16   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B16   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B16   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B17   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B17   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B17   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B17   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B18   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B18   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B18   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B18   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B19   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B19   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B19   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B19   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B20   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B20   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B20   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B20   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B21   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B21   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B21   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B21   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B22   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B22   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B22   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B22   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B23   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B23   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B23   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B23   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B24   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B24   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B24   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B24   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B25   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B25   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B25   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B25   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B26   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B26   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B26   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B26   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B27   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B27   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B27   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B27   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B28   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B28   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B28   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B28   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B29   chat       confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+B29   chat       unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+B29   tui        confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+B29   tui        unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+B30   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B30   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+B30   tui        confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+B30   tui        unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+C01   chat       confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C01   chat       unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C01   tui        confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C01   tui        unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C02   chat       confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C02   chat       unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C02   tui        confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C02   tui        unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C03   chat       confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C03   chat       unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C03   tui        confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C03   tui        unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C04   chat       confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C04   chat       unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C04   tui        confirm-everything  FAIL     1      ran-in-sandbox   ran-in-sandbox 
+C04   tui        unattended          FAIL     1      ran-in-sandbox   ran-in-sandbox 
+D01   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+D01   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+D02   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+D02   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+D03   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+D03   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+D04   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+D04   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+D05   chat       confirm-everything  PASS     1      ran-in-sandbox   ran-in-sandbox 
+D05   chat       unattended          PASS     1      ran-in-sandbox   ran-in-sandbox 
+
+Layer 2  verdicts: {"PASS":190,"FAIL":20}
+Layer 2  outcomes: {"ran-in-sandbox":174,"denied-by-floor":36}
+Layer 2 : total=210 executed-in-sandbox=174 gate-denied=36 INVALID=0
+
+Per front-end / autonomy outcome counts (the parity claim):
+  chat/confirm-everything: {"ran-in-sandbox":46,"denied-by-floor":9}
+  chat/unattended: {"ran-in-sandbox":46,"denied-by-floor":9}
+  tui/confirm-everything: {"ran-in-sandbox":41,"denied-by-floor":9}
+  tui/unattended: {"ran-in-sandbox":41,"denied-by-floor":9}
+
+================ LAYER 2 missing (4 runs) ================
+cell  front-end  autonomy            verdict  calls  predicted         observed        
+----  ---------  ------------------  -------  -----  ----------------  ----------------
+C01   chat       confirm-everything  PASS     1      refused-degraded  refused-degraded
+C01   chat       unattended          PASS     1      refused-degraded  refused-degraded
+C01   tui        confirm-everything  PASS     1      refused-degraded  refused-degraded
+C01   tui        unattended          PASS     1      refused-degraded  refused-degraded
+
+Layer 2 missing verdicts: {"PASS":4}
+Layer 2 missing outcomes: {"refused-degraded":4}
+Layer 2 missing: total=4 executed-in-sandbox=0 gate-denied=0 INVALID=0
+
+Per front-end / autonomy outcome counts (the parity claim):
+  chat/confirm-everything: {"refused-degraded":1}
+  chat/unattended: {"refused-degraded":1}
+  tui/confirm-everything: {"refused-degraded":1}
+  tui/unattended: {"refused-degraded":1}
+
+================ LAYER 2 not-executable (4 runs) ================
+cell  front-end  autonomy            verdict  calls  predicted         observed        
+----  ---------  ------------------  -------  -----  ----------------  ----------------
+C02   chat       confirm-everything  PASS     1      refused-degraded  refused-degraded
+C02   chat       unattended          PASS     1      refused-degraded  refused-degraded
+C02   tui        confirm-everything  PASS     1      refused-degraded  refused-degraded
+C02   tui        unattended          PASS     1      refused-degraded  refused-degraded
+
+Layer 2 not-executable verdicts: {"PASS":4}
+Layer 2 not-executable outcomes: {"refused-degraded":4}
+Layer 2 not-executable: total=4 executed-in-sandbox=0 gate-denied=0 INVALID=0
+
+Per front-end / autonomy outcome counts (the parity claim):
+  chat/confirm-everything: {"refused-degraded":1}
+  chat/unattended: {"refused-degraded":1}
+  tui/confirm-everything: {"refused-degraded":1}
+  tui/unattended: {"refused-degraded":1}
+
+================ LAYER 2 userns-denied (4 runs) ================
+cell  front-end  autonomy            verdict  calls  predicted         observed        
+----  ---------  ------------------  -------  -----  ----------------  ----------------
+C03   chat       confirm-everything  PASS     1      refused-degraded  refused-degraded
+C03   chat       unattended          PASS     1      refused-degraded  refused-degraded
+C03   tui        confirm-everything  PASS     1      refused-degraded  refused-degraded
+C03   tui        unattended          PASS     1      refused-degraded  refused-degraded
+
+Layer 2 userns-denied verdicts: {"PASS":4}
+Layer 2 userns-denied outcomes: {"refused-degraded":4}
+Layer 2 userns-denied: total=4 executed-in-sandbox=0 gate-denied=0 INVALID=0
+
+Per front-end / autonomy outcome counts (the parity claim):
+  chat/confirm-everything: {"refused-degraded":1}
+  chat/unattended: {"refused-degraded":1}
+  tui/confirm-everything: {"refused-degraded":1}
+  tui/unattended: {"refused-degraded":1}
+
+================ LAYER 2 failing (4 runs) ================
+cell  front-end  autonomy            verdict  calls  predicted         observed        
+----  ---------  ------------------  -------  -----  ----------------  ----------------
+C04   chat       confirm-everything  PASS     1      refused-degraded  refused-degraded
+C04   chat       unattended          PASS     1      refused-degraded  refused-degraded
+C04   tui        confirm-everything  PASS     1      refused-degraded  refused-degraded
+C04   tui        unattended          PASS     1      refused-degraded  refused-degraded
+
+Layer 2 failing verdicts: {"PASS":4}
+Layer 2 failing outcomes: {"refused-degraded":4}
+Layer 2 failing: total=4 executed-in-sandbox=0 gate-denied=0 INVALID=0
+
+Per front-end / autonomy outcome counts (the parity claim):
+  chat/confirm-everything: {"refused-degraded":1}
+  chat/unattended: {"refused-degraded":1}
+  tui/confirm-everything: {"refused-degraded":1}
+  tui/unattended: {"refused-degraded":1}
+
+summary written to /home/titan/atlas-evidence-20261113/run/evidence/summary.json
+sha256 of dist/permissions/default-rules.js (front-end under test): 26620ce228d4c1edbff232ebe6aae8ac589811525cd7c7ea7f0765b24319de56

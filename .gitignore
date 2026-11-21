@@ -7,9 +7,35 @@ coverage/
 *.log
 .DS_Store
 
+# Compiled test output. `tsconfig.build.json` excludes tests, so these only
+# appear when something runs a bare `tsc` - and then vitest collects the .js
+# copy of every .ts test and runs the whole suite twice, silently.
+tests/**/*.js
+tests/**/*.js.map
+tests/**/*.d.ts
+tests/**/*.d.ts.map
+
+# Same story outside tests: stale .js/.d.ts beside sources confuse eslint and
+# anything else that globs by extension. The one hand-written declaration is
+# tracked explicitly so it survives.
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+src/**/*.d.ts.map
+examples/**/*.js
+examples/**/*.js.map
+examples/**/*.d.ts
+examples/**/*.d.ts.map
+!src/voice/backends/sherpa-onnx/sherpa-onnx-node.d.ts
+
 # npm pack artifacts
 *.tgz
 
 # Python
 __pycache__/
 *.pyc
+
+# Root config compiled output from a bare tsc run.
+/vitest.config.js
+/vitest.config.d.ts
+/vitest.config.js.map

@@ -1,0 +1,21 @@
+{
+  "layer1": {
+    "PASS": 122
+  },
+  "layer2": {
+    "PASS": 190,
+    "FAIL": 20
+  },
+  "layer2c-missing": {
+    "PASS": 4
+  },
+  "layer2c-not-executable": {
+    "PASS": 4
+  },
+  "layer2c-userns-denied": {
+    "PASS": 4
+  },
+  "layer2c-failing": {
+    "PASS": 4
+  }
+}

@@ -16,6 +16,7 @@
     "atlas": "./dist/cli.js"
   },
   "files": [
+    "assets",
     "dist",
     "migrations",
     "README.md",

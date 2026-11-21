@@ -190,6 +190,13 @@ export function InitWizard({
       }
 
       if (step === 'endpoint') {
+        if (key.return) {
+          // Enter accepts the typed endpoint. Without this branch the step
+          // handled no confirm key at all, so the only way out was escaping
+          // out of the wizard entirely.
+          onSubmitKey();
+          return;
+        }
         if (key.backspace || key.delete) {
           onEndpointChange?.(endpoint.slice(0, -1));
           return;
@@ -319,10 +326,12 @@ export function InitWizard({
         <Box marginTop={1}>
           <Text {...tint(color ? palette.inkFaint : undefined)}>
             {step === 'search' ? 'type to search · ' : ''}
-            {rowCount > visible
+            {step !== 'endpoint' && rowCount > visible
               ? `${start + 1}-${start + visible} of ${rowCount} · `
               : ''}
-            ↑↓ move · enter choose · esc cancel
+            {step === 'endpoint'
+              ? 'enter accept · esc cancel'
+              : '↑↓ move · enter choose · esc cancel'}
           </Text>
         </Box>
       ) : null}
@@ -336,10 +345,19 @@ export function InitWizard({
       ) : null}
 
       {step === 'done' ? (
-        <Box marginTop={1}>
+        <Box flexDirection="column" marginTop={1}>
           <Text {...tint(color ? palette.success : undefined)}>
             saved: {providerName} · {model}
           </Text>
+          {/* The accepted-no-balance warning: saved, but say why free models
+              are all this key can use until the account is topped up. */}
+          {message !== undefined ? (
+            <Box marginTop={1}>
+              <Text {...tint(color ? palette.particle : undefined)}>
+                {message}
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : null}
 

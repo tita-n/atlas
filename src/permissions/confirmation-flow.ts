@@ -37,9 +37,21 @@ export interface ConfirmationOutcome {
 /** Text confirmation callback, replaceable by voice verification in Phase 3. */
 export type TextConfirmationResult = ConfirmationChoice | boolean;
 
-/** Text confirmation callback, replaceable by voice verification in Phase 3. */
+/**
+ * Text confirmation callback, replaceable by voice verification in Phase 3.
+ *
+ * The second parameter is how the implementation reports that it actually put
+ * the question to a human.
+ *
+ * This exists because "the confirmation path ran" and "someone was asked" are
+ * different events, and the audit log has to record the second one. Under
+ * `ATLAS_TEXT_CONFIRM_MODE=block` the callback returns a denial without
+ * prompting anyone; reporting that as `confirmationRequested: true` writes a
+ * row claiming a person refused a command they were never shown.
+ */
 export type TextConfirmation = (
   request: ConfirmationRequest,
+  asked?: (value: boolean) => void,
 ) => Promise<TextConfirmationResult>;
 
 /** Optional dependencies for confirmation flow. */
@@ -187,19 +199,27 @@ export class ConfirmationFlow {
     if (this.#hardFloor?.(command) === true) {
       // Uses the configured phrase rather than a hardcoded one, so a user who
       // changed the confirmation word still gets the prompt they expect.
-      const answer = await this.#confirmText({
-        command,
-        explanation,
-        phrase: this.#phrase,
-        sudoSetupRequired: assessment.sudoSetupRequired,
-      });
+      // Same asked-tracking as the main path: under block mode nobody is
+      // prompted here either.
+      let floorAsked = false;
+      const answer = await this.#confirmText(
+        {
+          command,
+          explanation,
+          phrase: this.#phrase,
+          sudoSetupRequired: assessment.sudoSetupRequired,
+        },
+        (value) => {
+          floorAsked = value;
+        },
+      );
       const choice: ConfirmationChoice =
         typeof answer === 'boolean' ? (answer ? 'once' : 'deny') : answer;
       return {
         approved: choice !== 'deny',
         choice,
         explanation,
-        confirmationRequested: true,
+        confirmationRequested: floorAsked,
         informational: false,
       };
     }
@@ -243,19 +263,30 @@ export class ConfirmationFlow {
       };
     }
 
-    const result = await this.#confirmText({
-      command,
-      explanation,
-      phrase: this.#phrase,
-      sudoSetupRequired: assessment.sudoSetupRequired,
-    });
+    // The callback reports whether a human was actually asked. Anything that
+    // does not call back is assumed NOT to have asked, because the default has
+    // to be the conservative one: claiming an unasked prompt would put a lie
+    // in the audit trail.
+    let asked = false;
+    const markAsked = (value: boolean): void => {
+      asked = value;
+    };
+    const result = await this.#confirmText(
+      {
+        command,
+        explanation,
+        phrase: this.#phrase,
+        sudoSetupRequired: assessment.sudoSetupRequired,
+      },
+      markAsked,
+    );
     const choice: ConfirmationChoice =
       typeof result === 'boolean' ? (result ? 'once' : 'deny') : result;
     return {
       approved: choice !== 'deny',
       choice,
       explanation,
-      confirmationRequested: true,
+      confirmationRequested: asked,
       informational: false,
     };
   }

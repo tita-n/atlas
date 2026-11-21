@@ -247,4 +247,45 @@ describe('AuditLog', () => {
       database.close();
     }
   });
+
+  it('round-trips the isolation context through storage', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'atlas-audit-'));
+    directories.push(directory);
+    const database = openDatabase(join(directory, 'atlas.db'));
+    const audit = new AuditLog(database);
+
+    try {
+      audit.append({
+        timestamp: '2026-01-03T00:00:00.000Z',
+        command: 'echo hi',
+        riskTier: 0,
+        matchedRule: 'default-tier-0',
+        decision: 'allowed',
+        outcome: 'succeeded',
+        exitCode: 0,
+        durationMs: 2,
+        gatePath: 'auto-allow-sandboxed',
+        sandbox: {
+          backend: 'bwrap',
+          profile: 'workspace-write',
+          writableRoots: ['/work', '/tmp/extra'],
+          networkEnabled: true,
+          escalated: false,
+        },
+      });
+
+      // The writer and `parseSandbox` are different code paths over the same
+      // columns, so a serialisation regression (JSON vs a comma-join, 0/1 vs a
+      // boolean) would otherwise be invisible until the log was read.
+      expect(audit.list()[0]?.sandbox).toEqual({
+        backend: 'bwrap',
+        profile: 'workspace-write',
+        writableRoots: ['/work', '/tmp/extra'],
+        networkEnabled: true,
+        escalated: false,
+      });
+    } finally {
+      database.close();
+    }
+  });
 });
