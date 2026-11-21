@@ -1,14 +1,24 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { ShellSessionError } from '../errors.js';
+import type { ExecutionSession } from '../execution/environment.js';
 import type { CommandResult } from './command-result.js';
 import { BoundedStreamBuffer } from './bounded-buffer.js';
 
 /** Options for the long-lived bash process. */
 export interface ShellSessionOptions {
-  /** Shell executable, defaults to bash. */
+  /**
+   * Full argv for the process to spawn.
+   *
+   * Takes an array rather than a path plus arguments so a sandboxed session can
+   * spawn `bwrap ... -- bash` through exactly the same protocol, marker
+   * handling, timeout and abort logic as a local one. There is no second
+   * implementation of the command protocol to drift out of step.
+   */
+  command?: readonly string[] | undefined;
+  /** Shell executable, defaults to bash. Ignored when `command` is given. */
   shellPath?: string | undefined;
-  /** Arguments used to start the shell. */
+  /** Arguments used to start the shell. Ignored when `command` is given. */
   shellArgs?: readonly string[] | undefined;
   /** Default per-command timeout in milliseconds. */
   timeoutMs?: number | undefined;
@@ -50,9 +60,17 @@ function trimMarkerNewline(text: string): string {
   return text.endsWith('\n') ? text.slice(0, -1) : text;
 }
 
-export class ShellSession {
+/**
+ * A single persistent bash process used for all shell tool calls in a session.
+ *
+ * Implements `ExecutionSession` so it is interchangeable with a sandboxed
+ * session. Nothing about it confines anything: it runs on the host exactly as
+ * it always has, which is why `LocalEnvironment` reports `sandboxed: false`.
+ */
+export class ShellSession implements ExecutionSession {
   readonly #shellPath: string;
   readonly #shellArgs: readonly string[];
+  readonly #command: readonly string[];
   readonly #timeoutMs: number;
   readonly #env: NodeJS.ProcessEnv;
   readonly #cwd: string | undefined;
@@ -64,6 +82,9 @@ export class ShellSession {
   public constructor(options: ShellSessionOptions = {}) {
     this.#shellPath = options.shellPath ?? 'bash';
     this.#shellArgs = options.shellArgs ?? ['--noprofile', '--norc'];
+    // An explicit argv wins, so a sandboxed session and a local one are the
+    // same code path with a different first element.
+    this.#command = options.command ?? [this.#shellPath, ...this.#shellArgs];
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#env = options.env ?? process.env;
     this.#cwd = options.cwd;
@@ -217,10 +238,14 @@ export class ShellSession {
     if (this.running) return;
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(this.#shellPath, [...this.#shellArgs], {
+      // shell:false with an argv array, always. Never `shell: true` here: that
+      // would hand the command line to /bin/sh on the host, which is precisely
+      // the boundary the sandbox exists to move.
+      child = spawn(this.#command[0] ?? 'bash', [...this.#command.slice(1)], {
         cwd: this.#cwd,
         env: this.#env,
         stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
       });
     } catch (error) {
       throw new ShellSessionError('Could not start the bash process.', {

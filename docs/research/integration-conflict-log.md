@@ -36,7 +36,8 @@ file because B is the main tip; the sandbox file history is listed below.
   evaluation before classifier tier/grant decisions and before preview, so no
   early path bypasses it. Classifier blocks and floor denials retain distinct
   audit paths. Main's removal of the floor was not carried forward because it
-  contradicts the explicit invariant.
+  contradicts the explicit invariant. Also applied the sandbox `ShellSession`
+  argv support so bwrap is spawned with its exact argv and `shell: false`.
 
 ### `src/conversation/assistant-runtime.ts`
 
@@ -50,8 +51,9 @@ file because B is the main tip; the sandbox file history is listed below.
   `createGate`, environment resolution, protection callback, file tools,
   trusted-profile selection, and status/audit wiring. Main's direct gate and
   host-shell path were rejected because they bypass the required builder and
-  execution boundary. Existing runtime provider/memory lifecycle remains in
-  place.
+  execution boundary. Applied the sandbox `CreateSessionOptions.fileTools`
+  router and `FileTools` implementation where main's tree lacked that API.
+  Existing runtime provider/memory lifecycle remains in place.
 
 ### `src/cli.ts`
 

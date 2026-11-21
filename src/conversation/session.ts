@@ -38,6 +38,7 @@ import {
 } from './narration.js';
 import { loadPersonality, defaultPersonalityPath } from './personality.js';
 import { buildTurnPrompt } from './system-prompt.js';
+import { FileTools } from '../shell/file-tools.js';
 import {
   annotateIfUnverified,
   buildReport,
@@ -163,6 +164,18 @@ export interface CreateSessionOptions {
   readonly corrections: CorrectionsRepository;
   readonly toolExecutor: ToolExecutor | undefined;
   readonly tools: readonly ToolDefinition[];
+  /**
+   * Directories the file tools may read and write.
+   *
+   * Scoped rather than general, so an approved scope or a future sandbox mount
+   * can constrain file access the way it constrains the shell.
+   */
+  readonly fileTools?:
+    | {
+        readonly readRoots: readonly string[];
+        readonly writeRoots: readonly string[];
+      }
+    | undefined;
   readonly buildSystemPrompt: () => string;
   /** Generation limits, previously accepted by config init but silently dropped. */
   readonly maxTokens?: number | undefined;
@@ -550,10 +563,32 @@ export async function createAssistantSession(
   options: CreateSessionOptions,
 ): Promise<AssistantSession> {
   const ledger = new ExecutionLedger();
-  const executor =
+  // The file tools come first, then the shell. Models reach for `read_file`
+  // and `write_file` because those are the tools they were trained to use;
+  // previously only `shell` existed and file work was narrated but never done.
+  const fileTools =
+    options.fileTools === undefined
+      ? undefined
+      : new FileTools(options.fileTools);
+  const shellExecutor =
     options.toolExecutor === undefined
       ? undefined
       : new RecordingToolExecutor(options.toolExecutor, ledger);
+  const executor: ToolExecutor | undefined =
+    fileTools === undefined
+      ? shellExecutor
+      : shellExecutor === undefined
+        ? { execute: (call) => fileTools.execute(call) }
+        : {
+            execute: (call) => {
+              const fileNames = new Set(
+                fileTools.definitions().map((tool) => tool.name),
+              );
+              return fileNames.has(call.name)
+                ? fileTools.execute(call)
+                : shellExecutor.execute(call);
+            },
+          };
   const conversation = new Conversation({
     model: options.model,
     ...(options.maxTokens === undefined
@@ -570,7 +605,11 @@ export async function createAssistantSession(
     maxToolIterations: options.config.maxToolIterations,
     toolChoice: 'auto',
     ...(executor === undefined ? {} : { toolExecutor: executor }),
-    ...(options.tools.length === 0 ? {} : { tools: options.tools }),
+    ...(options.tools.length === 0 && fileTools === undefined
+      ? {}
+      : {
+          tools: [...options.tools, ...(fileTools?.definitions() ?? [])],
+        }),
     ...(options.onTurnComplete === undefined
       ? {}
       : { onTurnComplete: options.onTurnComplete }),
@@ -599,7 +638,11 @@ export async function createAssistantSession(
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   session.adopt(ledger);
-  session.setAvailableTools(options.tools.map((tool) => tool.name));
+  session.setAvailableTools(
+    options.tools
+      .map((tool) => tool.name)
+      .concat(fileTools?.definitions().map((tool) => tool.name) ?? []),
+  );
   await session.loadPersonality();
   await session.maybeWarnTextConfirm();
   return session;
