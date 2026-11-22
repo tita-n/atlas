@@ -34,7 +34,7 @@ export const REAL_BACKUP = '/home/titan/atlas-backup-20261016';
  * home directory instead - hard-coded like the REAL_* constants above, so no
  * environment variable can move the boundary.
  */
-export const DISPOSABLE_ROOT = '/home/titan/atlas-evidence-20261113/run-integration-20261121';
+export const DISPOSABLE_ROOT = '/home/titan/atlas-evidence-20261113/run-integration-final-20261121';
 
 /** The forbidden prefixes, in the order they are reported. */
 const FORBIDDEN = [

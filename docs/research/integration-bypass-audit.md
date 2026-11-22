@@ -28,7 +28,7 @@ prove runtime behavior beyond the cited call paths.
 | `src/conversation/session.ts` | Write one-time notice marker; its `FileTools` operations are the model-facing path and are scoped by the shared protected-target policy. |
 | `src/execution/full-access.ts` | Operator grant/evidence writes and revocation; ceremony-gated, no model tool. |
 | `src/execution/trust.ts` | Operator trust records/evidence; explicit trust CLI, no model tool. |
-| `src/memory/database.ts` | Create configured database parent directory; runtime persistence, not model-selected paths. |
+| `src/memory/database.ts` | Create configured database parent directory; resolves explicit `ATLAS_DB_PATH`, then `ATLAS_HOME/atlas.db`, then the default `HOME/.atlas/atlas.db`; runtime persistence, not model-selected paths. |
 | `src/permissions/autonomy.ts` | Operator autonomy settings; explicit CLI flow. |
 | `src/permissions/grant-store.ts` | Persist grants only after the permission flow returns an explicit remember choice; the hard floor is independently checked before grant/tier shortcuts. |
 | `src/permissions/sudoers-setup.ts` | Temporary restricted sudoers file for explicit operator setup; fixed system destination. |

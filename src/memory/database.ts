@@ -131,7 +131,10 @@ export function resolveDatabasePath(
   ) {
     return resolve(environment.ATLAS_DB_PATH);
   }
-  return getDefaultDatabasePath();
+  if (environment.ATLAS_HOME !== undefined && environment.ATLAS_HOME !== '') {
+    return resolve(environment.ATLAS_HOME, 'atlas.db');
+  }
+  return getDefaultDatabasePath(environment.HOME ?? homedir());
 }
 
 /** Opens SQLite, applies pending migrations, and returns the database handle. */

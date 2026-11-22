@@ -58,12 +58,16 @@ describe('VerifiedBwrapSession', () => {
 
   it('re-verifies if the persistent shell exited and needs a fresh process', async () => {
     const verify = vi.fn(() => Promise.resolve(report(true)));
-    const create = vi.fn((cwd: string) => Promise.resolve(fakeSession(cwd)));
+    const sessions: ExecutionSession[] = [];
+    const create = vi.fn((cwd: string) => {
+      const opened = fakeSession(cwd);
+      sessions.push(opened);
+      return Promise.resolve(opened);
+    });
     const session = new VerifiedBwrapSession(create, verify, '/work');
 
     await session.execute('true');
-    const firstShell = await create.mock.results[0]?.value;
-    firstShell?.close();
+    sessions[0]?.close();
     await session.execute('true');
 
     expect(verify).toHaveBeenCalledTimes(2);
