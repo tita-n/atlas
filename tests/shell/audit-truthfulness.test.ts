@@ -154,10 +154,23 @@ describe('truthful gate_path', () => {
     // classifier ALLOWS it because of the grant, and only the floor objects.
     expect(classifier.assess(command, '/work').decision).toBe('allow');
     expect(classifier.assess(command, '/work').tier).toBe(0);
+    let gateReviewed = false;
+    const confirmation = {
+      review: () => {
+        gateReviewed = true;
+        return Promise.resolve({
+          approved: false,
+          choice: 'deny' as const,
+          explanation: 'floor requires a human decision',
+          confirmationRequested: true,
+          informational: false,
+        });
+      },
+    } as unknown as ConfirmationFlow;
     const tool = new ShellTool({
       session: session(rec.ran),
       classifier,
-      confirmation: gate(true, false),
+      confirmation,
       auditLog: audit as unknown as AuditLog,
       grantStore: grantStore as never,
       sandbox: sandbox('bwrap'),
@@ -165,9 +178,10 @@ describe('truthful gate_path', () => {
 
     const result = await tool.execute(call(command));
     expect(rec.ran).toEqual([]);
-    expect(rec.rows[0]?.decision).toBe('blocked');
+    expect(gateReviewed).toBe(true);
+    expect(rec.rows[0]?.decision).toBe('asked-denied');
     expect(rec.rows[0]?.outcome).toBe('denied');
-    expect(rec.rows[0]?.gatePath).toBe('denied-hard-floor');
+    expect(rec.rows[0]?.gatePath).toBe('text-safe-word');
     expect(result.isError).toBe(true);
   });
 
