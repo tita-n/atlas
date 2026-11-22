@@ -20,15 +20,15 @@ function fakeSession(cwd: string): ExecutionSession {
     get running() {
       return running;
     },
-    async execute(): Promise<CommandResult> {
-      return {
+    execute(): Promise<CommandResult> {
+      return Promise.resolve({
         stdout: '',
         stderr: '',
         exitCode: 0,
         durationMs: 0,
         timedOut: false,
         cancelled: false,
-      };
+      });
     },
     restart() {
       running = true;
@@ -41,8 +41,8 @@ function fakeSession(cwd: string): ExecutionSession {
 
 describe('VerifiedBwrapSession', () => {
   it('verifies isolation before the initial start and every restart', async () => {
-    const verify = vi.fn(async () => report(true));
-    const create = vi.fn(async (cwd: string) => fakeSession(cwd));
+    const verify = vi.fn(() => Promise.resolve(report(true)));
+    const create = vi.fn((cwd: string) => Promise.resolve(fakeSession(cwd)));
     const session = new VerifiedBwrapSession(create, verify, '/work');
 
     session.restart();
@@ -57,8 +57,8 @@ describe('VerifiedBwrapSession', () => {
   });
 
   it('refuses to start a shell when the isolation check mismatches', async () => {
-    const verify = vi.fn(async () => report(false));
-    const create = vi.fn(async (cwd: string) => fakeSession(cwd));
+    const verify = vi.fn(() => Promise.resolve(report(false)));
+    const create = vi.fn((cwd: string) => Promise.resolve(fakeSession(cwd)));
     const session = new VerifiedBwrapSession(create, verify, '/work');
 
     session.restart();

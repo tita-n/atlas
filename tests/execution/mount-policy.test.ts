@@ -176,13 +176,34 @@ describe('buildBwrapCommand', () => {
     expect(writableAt).toBeGreaterThan(-1);
     expect(argv[writableAt - 1]).toBe('--bind');
 
-    for (const rel of ['dist', 'src/permissions', join('.git', 'hooks')]) {
+    for (const rel of ['dist', 'src/permissions']) {
       const target = join(root, rel);
       const at = argv.indexOf(target, writableAt);
       expect(at, `${rel} must be re-bound`).toBeGreaterThan(writableAt);
       // Re-bound READ-ONLY, after the writable bind: a later writable mount
       // would undo the protection it is restoring.
       expect(argv[at - 1]).toBe('--ro-bind');
+    }
+
+    // Linked worktrees store `.git` as a file, so exercise the hooks policy
+    // against a disposable workspace with a real `.git/hooks` directory.
+    const gitWorkspace = mkdtempSync(join(tmpdir(), 'atlas-git-mount-'));
+    try {
+      mkdirSync(join(gitWorkspace, '.git', 'hooks'), { recursive: true });
+      const gitArgv = args(
+        policy({
+          cwd: gitWorkspace,
+          writableRoots: [gitWorkspace],
+          atlasHome: join(gitWorkspace, '.atlas-fixture'),
+        }),
+      );
+      const target = join(gitWorkspace, '.git', 'hooks');
+      const writableAt = gitArgv.indexOf(gitWorkspace, gitArgv.indexOf('--bind'));
+      const at = gitArgv.indexOf(target, writableAt);
+      expect(at, '.git/hooks must be re-bound').toBeGreaterThan(writableAt);
+      expect(gitArgv[at - 1]).toBe('--ro-bind');
+    } finally {
+      rmSync(gitWorkspace, { recursive: true, force: true });
     }
   });
 

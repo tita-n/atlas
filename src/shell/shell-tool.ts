@@ -307,29 +307,6 @@ export class ShellTool implements ToolExecutor {
     const assessment = this.#classifier.assess(command, cwd);
     const timestamp = new Date().toISOString();
 
-    if (floor.applies) {
-      this.#auditLog.append({
-        timestamp,
-        command,
-        summary: floor.reason ?? 'unrecoverable action',
-        riskTier: assessment.tier,
-        matchedRule: assessment.matchedRule.id,
-        decision: 'blocked',
-        outcome: 'denied',
-        gatePath: 'denied-hard-floor',
-        autonomy: this.#autonomy?.() ?? 'confirm-everything',
-        ...this.#sandboxField(),
-        exitCode: null,
-        durationMs: null,
-      });
-      return {
-        content:
-          floor.reason ??
-          'This action is permanently blocked by Atlas and was not executed.',
-        isError: true,
-      };
-    }
-
     // Preview runs before any gate: seeing what a command would do must not
     // require approving it first, and a preview never executes the command.
     if (parsed.data.dryRun === true && this.#dryRun !== undefined) {
@@ -350,7 +327,7 @@ export class ShellTool implements ToolExecutor {
         // mode is NOT this branch - it refuses one layer down, in
         // ConfirmationFlow, and lands on the denial rows with decision
         // 'blocked' and gate path 'hard-block'.
-        gatePath: 'hard-block',
+        gatePath: floor.applies ? 'denied-hard-floor' : 'hard-block',
         autonomy: this.#autonomy?.() ?? 'confirm-everything',
         ...this.#sandboxField(),
         exitCode: null,
@@ -407,7 +384,7 @@ export class ShellTool implements ToolExecutor {
     // wrote `asked-approved` / `text-safe-word` onto rows where nobody typed a
     // safe word, which is the exact lie this column exists to prevent.
     let confirmationRequested = false;
-    if (assessment.requiresConfirmation || assessment.tier === 3) {
+    if (floor.applies || assessment.requiresConfirmation || assessment.tier === 3) {
       try {
         const outcome = await this.#confirmation.review(command, assessment);
         approved = outcome.approved;

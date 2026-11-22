@@ -167,7 +167,7 @@ export class BwrapEnvironment implements ExecutionEnvironment {
   ): ExecutionSession {
     const cwd = options.cwd ?? this.#cwd;
     return new VerifiedBwrapSession(
-      async (startCwd) => {
+      (startCwd) => {
         const built = buildBwrapCommand(
           { ...this.#policy, cwd: startCwd },
           this.#bwrapPath,
@@ -215,7 +215,9 @@ export class BwrapEnvironment implements ExecutionEnvironment {
 
 /** ExecutionSession wrapper that verifies isolation before every shell start. */
 export class VerifiedBwrapSession implements ExecutionSession {
-  readonly #create: (cwd: string) => Promise<ExecutionSession>;
+  readonly #create: (
+    cwd: string,
+  ) => ExecutionSession | Promise<ExecutionSession>;
   readonly #verify: () => Promise<IsolationReport>;
   #cwd: string;
   #session: ExecutionSession | undefined;
@@ -223,7 +225,7 @@ export class VerifiedBwrapSession implements ExecutionSession {
   #closed = false;
 
   public constructor(
-    create: (cwd: string) => Promise<ExecutionSession>,
+    create: (cwd: string) => ExecutionSession | Promise<ExecutionSession>,
     verify: () => Promise<IsolationReport>,
     cwd: string,
   ) {

@@ -38,6 +38,9 @@ file because B is the main tip; the sandbox file history is listed below.
   audit paths. Main's removal of the floor was not carried forward because it
   contradicts the explicit invariant. Also applied the sandbox `ShellSession`
   argv support so bwrap is spawned with its exact argv and `shell: false`.
+  Recoverable safety-config writes are not permanently blocked: a floor hit
+  forces the shared confirmation flow even when the classifier/autonomy would
+  otherwise skip asking; catastrophic tier-1 commands remain denied.
 
 ### `src/conversation/assistant-runtime.ts`
 

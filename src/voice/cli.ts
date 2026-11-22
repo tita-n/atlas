@@ -772,8 +772,10 @@ export async function runVoiceListen(
       newConversation: false,
       // Voice recognition is not an approval signal for shell execution. A
       // gated action must be approved in an interactive chat/TUI session.
-      requestConfirmation: async () => 'deny',
-      onProtectionChange: (status) => console.log(describeStatus(status)),
+      requestConfirmation: () => Promise.resolve('deny'),
+      onProtectionChange: (status) => {
+        console.log(describeStatus(status));
+      },
     });
     if (started.locked) {
       console.error(started.message);
