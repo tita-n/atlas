@@ -249,6 +249,14 @@ export class VerifiedBwrapSession implements ExecutionSession {
   ) {
     if (this.#closed) throw new BwrapUnavailableError('Sandbox session is closed.');
     let opening = this.#opening;
+    if (this.#session !== undefined && !this.#session.running) {
+      const cwd = this.currentDirectory;
+      this.#session.close();
+      this.#session = undefined;
+      opening = this.#start(cwd);
+      this.#opening = opening;
+      void opening.catch(() => undefined);
+    }
     if (this.#session === undefined && opening === undefined) {
       opening = this.#start(this.#cwd);
       this.#opening = opening;
