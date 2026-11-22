@@ -879,6 +879,10 @@ export async function runVoiceListen(
       verifier.dispose();
       // The microphone child is a live handle; without an explicit exit
       // Ctrl+C leaves the process hanging instead of returning to the shell.
+      // Release the shared assistant runtime first so the session lock and its
+      // database are not left behind by the explicit process exit.
+      await closeAssistant?.();
+      closeAssistant = undefined;
       process.exit(process.exitCode ?? 0);
     }
   } finally {
