@@ -652,4 +652,3 @@ and §1 said `NoNewPrivs` is verified "before it reports itself as confining";
 probe with no production caller. `hiddenPaths` was documented as "paths masked
 from view" while it also contains read-only-pinned subpaths — a weaker
 guarantee — so the field's doc now distinguishes the two.
-
