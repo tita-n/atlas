@@ -8,13 +8,18 @@ root), and no merge base exists. A search across the available main history
 found no closer tree than `B`; however, `B` is **not** near-identical to the
 synthetic snapshot: `git diff --stat B e9a2a0f` reports 35 paths, 11,214
 insertions, and 88 deletions. This reflects product/docs files that differ
-between the recovered snapshot and current main, so grafting `e9a2a0f` onto B
-would make Git treat the entire tree delta as sandbox work and risk undoing main.
+between the recovered snapshot and current main, so a graft could not be used
+as a blind replacement of main.
 
-Method: apply the sandbox net patch `e9a2a0f..origin/sandbox-wip` onto `B` with
-three-way application, then reconcile conflicts. This preserves main's current
-tree and applies only the sandbox branch's net changes; it does not rewrite or
-replace either source branch. No `git replace --graft` was used.
+Method: first applied the sandbox net patch `e9a2a0f..origin/sandbox-wip` onto B
+and resolved the four requested files. To preserve all sandbox commit ancestry
+and recover snapshot-era deltas omitted by that net patch, created a temporary
+`git replace --graft e9a2a0f B`, performed a real `git merge --no-ff`, and
+removed the replacement ref after the merge commit. The replacement exists only
+to let Git calculate the three-way merge; it does not rewrite either source
+branch. The graft merge surfaced additional sandbox deltas, which were reviewed
+and selectively reconciled below. `origin/main` and `origin/sandbox-wip` remain
+unchanged.
 
 ## Conflict records
 
@@ -92,3 +97,47 @@ file because B is the main tip; the sandbox file history is listed below.
 This is a decision log, not proof of invariant satisfaction. The build, tests,
 architectural scan, bypass audit, matrix runs, and front-end exercises must be
 completed before this branch is considered verified.
+
+## Graft-merge reconciliation
+
+The graft merge was tested in a detached probe worktree. Seven conflicts were
+resolved individually by retaining the already-reconciled integration content;
+the incoming sandbox versions were compared hunk-by-hunk before that choice:
+
+- `portfolio/index.html`: retained the syntax-repaired, formatted integration
+  file; the incoming snapshot had two malformed `class` attributes.
+- `src/execution/bwrap/bwrap-environment.ts`: retained the verified wrapper,
+  which runs `verifyIsolation` before every shell start/restart; the incoming
+  snapshot created a shell without that runtime check.
+- `src/shell/shell-tool.ts`: retained floor evaluation before classifier and
+  grant decisions and the floor-triggered shared confirmation path; the
+  incoming snapshot checked later and did not force the review path.
+- `tests/execution/mount-policy.test.ts`: retained the test using a disposable
+  real `.git/hooks` directory, since linked worktrees can represent `.git` as a
+  file and invalidate the previous fixture.
+- `tests/shell/audit-truthfulness.test.ts`: retained the regression assertion
+  that a grant cannot skip the floor and that a declined floor review is
+  truthfully recorded.
+- `tools/sandbox-matrix/guard.mjs`: retained the fixed integration disposable
+  root, separate from prior evidence.
+- `tools/sandbox-matrix/run.mjs`: retained `ATLAS_MATRIX_SOURCE`, so the harness
+  copies the integration build rather than silently testing `/home/titan/atlas`.
+
+The merge also recovered these sandbox snapshot-era changes and their tests:
+
+- `src/conversation/system-prompt.ts`: explicit guidance for purpose-built file
+  tools instead of shell redirection.
+- `src/memory/fact-extractor.ts` and its tests: require a matching user-text
+  quote before persisting an extracted fact.
+- `src/permissions/autonomy.ts`: tamper-evidence digest for reduced autonomy
+  settings and narrower home-target interpretation in the hard-floor helper.
+- `src/selfmod/protected-paths.ts`: derive protection for compiled safety code
+  from the existing protected source list.
+- `tests/permissions/autonomy-wiring.test.ts`: added a regression ensuring
+  unattended mode cannot recursively delete a home subdirectory.
+
+Security boundary: kept main's broader `HARD_DENY_RULES` for recursive deletion
+under `$HOME` and its corresponding adversarial test. The sandbox snapshot's
+removal of those denies made `rm -rf ~/Downloads/foo` execute under unattended
+mode (the new regression test was RED before retaining the rules and GREEN after).
+This preserves the deny check rather than replacing it with an approval prompt.

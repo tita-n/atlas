@@ -108,13 +108,16 @@ async function run(
   command: string,
 ): Promise<{
   asked: boolean;
+  refused: boolean;
   entry: ReturnType<AuditLog['list']>[number] | undefined;
 }> {
   const before = h.prompts();
   await h.tool.execute({ id: '1', name: 'shell', arguments: { command } });
   const asked = h.prompts() > before;
   const rows = h.audit.list({ limit: 1 });
-  return { asked, entry: rows[0] };
+  const row = rows[0];
+  const refused = row?.outcome === 'denied' || row?.decision === 'blocked';
+  return { asked, refused, entry: row };
 }
 
 describe('autonomy changes take effect without a restart', () => {
@@ -156,6 +159,7 @@ describe('autonomy changes take effect without a restart', () => {
       confirmation,
       auditLog: audit,
       name: 'shell',
+      home: HOME,
       autonomy: () => readAutonomySync(home).level,
     });
 
@@ -187,11 +191,26 @@ describe('autonomy changes take effect without a restart', () => {
 });
 
 describe('autonomy wiring, end to end', () => {
+  it('does not let unattended recursively delete a home subdirectory', async () => {
+    const h = harness({ level: 'unattended' });
+    try {
+      const result = await run(h, 'rm -rf ~/Downloads/foo');
+      expect(result.refused).toBe(true);
+      expect(result.entry?.outcome).toBe('denied');
+      expect(result.entry?.exitCode).toBeNull();
+    } finally {
+      h.close();
+    }
+  });
+
   it('asks for everything at the default level', async () => {
     const h = harness({ level: 'confirm-everything' });
     try {
       const result = await run(h, 'systemctl stop nginx');
-      expect(result.asked).toBe(true);
+      // The floor now denies BEFORE prompting, so what matters is that it
+      // never executed. Asserted on the outcome rather than on asking.
+      expect(result.refused).toBe(true);
+      expect(result.entry?.exitCode).toBeNull();
       expect(result.entry?.autonomy).toBe('confirm-everything');
     } finally {
       h.close();
@@ -243,7 +262,7 @@ describe('autonomy wiring, end to end', () => {
         h,
         'echo x > /home/tester/.atlas/permissions.json',
       );
-      expect(result.asked).toBe(true);
+      expect(result.refused).toBe(true);
     } finally {
       h.close();
     }
@@ -253,9 +272,9 @@ describe('autonomy wiring, end to end', () => {
     const h = harness({ level: 'unattended' });
     try {
       expect(
-        (await run(h, 'rm /home/tester/.atlas/permissions.json')).asked,
+        (await run(h, 'rm /home/tester/.atlas/permissions.json')).refused,
       ).toBe(true);
-      expect((await run(h, 'rm ~/.atlas/autonomy.json')).asked).toBe(true);
+      expect((await run(h, 'rm ~/.atlas/autonomy.json')).refused).toBe(true);
     } finally {
       h.close();
     }
@@ -310,8 +329,9 @@ describe('autonomy wiring, end to end', () => {
         h,
         'echo x > /home/tester/.atlas/permissions.json',
       );
-      // The gate asked and the answer was no, so nothing ran.
-      expect(result.asked).toBe(true);
+      // Refused by the hard floor before any prompt, so nothing ran. Whether
+      // it asked is no longer the meaningful assertion.
+      expect(result.refused).toBe(true);
       expect(result.entry?.outcome).toBe('denied');
       expect(before).not.toBe(0);
     } finally {

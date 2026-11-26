@@ -43,7 +43,7 @@ describe('persistent conversation integration', () => {
         return Promise.resolve({
           model: 'mock-model',
           content: isExtraction
-            ? '{"facts":[{"content":"My name is Sam.","category":"identity"}]}'
+            ? '{"facts":[{"content":"My name is Sam.","category":"identity","quote":"my name is sam"}]}'
             : `mock reply ${request.messages.length}`,
         });
       });

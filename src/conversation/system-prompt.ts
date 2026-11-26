@@ -63,12 +63,52 @@ function toolsSection(names: readonly string[]): string {
       '  from the notes above.',
     ].join('\n');
   }
-  return [
-    'Tools you can call:',
-    `- ${names.join(', ')}`,
+  const has = (name: string): boolean => names.includes(name);
+  const lines: string[] = ['Tools you can call:', `- ${names.join(', ')}`];
+
+  // The evaluation caught the model narrating a plan to create files and then
+  // producing nothing, because nothing said these tools existed or how to use
+  // them. Say it plainly rather than expecting the model to rediscover it.
+  if (has('read_file')) {
+    lines.push('- To READ a file, call `read_file` with its path.');
+  }
+  if (has('write_file')) {
+    lines.push(
+      '- To CREATE a file or save content, call `write_file` with the path and',
+      '  the full content. Do this instead of shell redirection or a heredoc.',
+    );
+  }
+  if (has('edit_file')) {
+    lines.push(
+      '- To CHANGE an existing file, call `edit_file` with the exact text to',
+      '  replace and its replacement.',
+    );
+  }
+  if (has('search_files')) {
+    lines.push(
+      '- To FIND files by name, or text inside them, call `search_files`',
+      '  instead of shelling out to find or grep.',
+    );
+  }
+  if (has('list_directory')) {
+    lines.push('- To see what is in a directory, call `list_directory`.');
+  }
+  if (has('delete_file')) {
+    lines.push('- To remove a file, call `delete_file`.');
+  }
+  if (has('shell')) {
+    lines.push(
+      '- Use `shell` for running commands and processes. Prefer the purpose-',
+      '  built tools above for anything to do with file content.',
+    );
+  }
+  lines.push(
     '- That is the complete list. You have no other tools, and no tools for',
     '  reading or writing memory; remembering is handled automatically.',
-  ].join('\n');
+    '- If a task needs a file created or changed, use the tools. Do not',
+    '  describe what you would do - do it.',
+  );
+  return lines.join('\n');
 }
 
 function section(title: string, lines: readonly string[]): string {

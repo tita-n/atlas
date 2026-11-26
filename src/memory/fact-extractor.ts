@@ -12,6 +12,7 @@ const extractedFactsSchema = z.object({
       z.object({
         content: z.string().trim().min(1).max(500),
         category: z.string().trim().min(1).max(80).nullable().optional(),
+        quote: z.string().trim().max(600).optional(),
       }),
     )
     .max(10),
@@ -33,6 +34,12 @@ export interface ExtractedFact {
   content: string;
   /** Optional flexible category. */
   category: string | null;
+  /**
+   * Verbatim span of the user message that supports this fact.
+   *
+   * Absent or non-matching quotes mean the fact is rejected rather than stored.
+   */
+  quote: string;
 }
 
 /** Dependencies for the asynchronous fact extractor. */
@@ -76,8 +83,27 @@ export function parseFactExtraction(text: string): ExtractedFact[] {
     return {
       content: fact.content.trim(),
       category: category === undefined || category === '' ? null : category,
+      quote: typeof fact.quote === 'string' ? fact.quote.trim() : '',
     };
   });
+}
+
+/**
+ * Whether a quoted span genuinely occurs in what the user actually said.
+ *
+ * Whitespace is collapsed on both sides so a model that reformats the quote
+ * slightly still matches, but the words themselves must be present. An empty or
+ * absent quote fails: a fact that cannot cite its own evidence is not stored.
+ */
+export function isSupportedByUserText(
+  quote: string,
+  userText: string,
+): boolean {
+  const normalize = (value: string): string =>
+    value.replace(/\s+/g, ' ').trim().toLowerCase();
+  const cited = normalize(quote);
+  if (cited === '') return false;
+  return normalize(userText).includes(cited);
 }
 
 /** Performs conservative, non-blocking durable-fact extraction. */
@@ -116,8 +142,14 @@ export class FactExtractor {
               'Only store facts explicitly stated by the user, such as identity, ' +
               'stable preferences, ongoing projects, or corrections. ' +
               'Do not store opinions, one-off task details, assistant statements, ' +
-              'or guesses. Return JSON only in the form ' +
-              '{"facts":[{"content":"standalone fact","category":"optional tag"}]}. ' +
+              'or guesses. ' +
+              'For EVERY fact you must also give "quote": the exact, verbatim ' +
+              'span of the USER message that states it, copied character for ' +
+              'character. If you cannot quote supporting text, do not report ' +
+              'the fact at all. A fact that cannot be quoted is invented. ' +
+              'Return JSON only in the form ' +
+              '{"facts":[{"content":"standalone fact","category":"optional tag",' +
+              '"quote":"exact words from the user message"}]}. ' +
               'Return {"facts":[]} when nothing qualifies.' +
               ' Output ONLY a JSON object as plain text. Do not call any tools. Do not write anything other than the JSON.',
           },
@@ -161,7 +193,14 @@ export class FactExtractor {
       });
     }
 
-    const extracted = parseFactExtraction(response.content);
+    const userText = exchange.userContent;
+    // A claimed fact is only real if the model can point at the words in the
+    // user's own message that say so. Without this check the extractor writes
+    // whatever the model invents into durable memory, and every later turn
+    // receives it as authoritative.
+    const extracted = parseFactExtraction(response.content).filter((fact) =>
+      isSupportedByUserText(fact.quote, userText),
+    );
     const existing = new Set(
       this.#factsRepository
         .getAllFacts()

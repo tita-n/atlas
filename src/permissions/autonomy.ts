@@ -19,6 +19,7 @@
  * of `unattended` cannot switch it off.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -123,6 +124,60 @@ export function settingsPath(atlasHome: string): string {
   return join(atlasHome, 'autonomy.json');
 }
 
+/** Companion file holding the digest of a legitimately written settings file. */
+export function tamperEvidencePath(atlasHome: string): string {
+  return join(atlasHome, 'autonomy.sha256');
+}
+
+/**
+ * Digest of a settings file.
+ *
+ * The ceremony in the `autonomy` command is only meaningful if there is
+ * something to detect when it was skipped. Without this, writing autonomy.json
+ * by hand - a script, a dotfile manager, an earlier session - sets unattended
+ * with no ceremony at all, which is exactly the hole this closes.
+ */
+function digestOf(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+/** Records the digest for a settings file we just wrote through the ceremony. */
+async function writeTamperEvidence(
+  atlasHome: string,
+  raw: string,
+): Promise<void> {
+  try {
+    await writeFile(tamperEvidencePath(atlasHome), digestOf(raw), {
+      mode: 0o600,
+    });
+  } catch {
+    // Evidence that cannot be written is not fatal here; the settings file is
+    // still written and the next load fails safe.
+  }
+}
+
+/**
+ * Whether a settings file carries matching ceremony evidence.
+ *
+ * The default level needs no ceremony, so absent evidence is fine. A lowered
+ * level is only honoured when its digest matches - otherwise the loader falls
+ * back to full confirmation.
+ */
+async function hasValidEvidence(
+  atlasHome: string,
+  raw: string,
+  level: AutonomyLevel,
+): Promise<boolean> {
+  if (level === DEFAULT_AUTONOMY_LEVEL) return true;
+  let recorded: string;
+  try {
+    recorded = (await readFile(tamperEvidencePath(atlasHome), 'utf8')).trim();
+  } catch {
+    return false;
+  }
+  return recorded === digestOf(raw);
+}
+
 /**
  * Loads the persisted level.
  *
@@ -134,18 +189,23 @@ export async function loadAutonomy(
   atlasHome: string,
 ): Promise<AutonomySettings> {
   try {
-    const parsed: unknown = JSON.parse(
-      await readFile(settingsPath(atlasHome), 'utf8'),
-    );
+    const raw = await readFile(settingsPath(atlasHome), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
     if (
       typeof parsed === 'object' &&
       parsed !== null &&
       'level' in parsed &&
       isAutonomyLevel(parsed.level)
     ) {
+      // A lowered level is only honoured with matching ceremony evidence.
+      // Otherwise the file was written by something that skipped the ceremony,
+      // and the reduction is refused.
+      if (!(await hasValidEvidence(atlasHome, raw, parsed.level))) {
+        return { level: DEFAULT_AUTONOMY_LEVEL, changedAt: '' };
+      }
       const changedAt = (parsed as { changedAt?: unknown }).changedAt;
       return {
-        level: (parsed as { level: AutonomyLevel }).level,
+        level: parsed.level,
         changedAt: typeof changedAt === 'string' ? changedAt : '',
       };
     }
@@ -166,15 +226,17 @@ export async function loadAutonomy(
  */
 export function readAutonomySync(atlasHome: string): AutonomySettings {
   try {
-    const parsed: unknown = JSON.parse(
-      readFileSync(settingsPath(atlasHome), 'utf8'),
-    );
+    const raw = readFileSync(settingsPath(atlasHome), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
     if (
       typeof parsed === 'object' &&
       parsed !== null &&
       'level' in parsed &&
       isAutonomyLevel(parsed.level)
     ) {
+      if (!evidenceMatchesSync(atlasHome, raw, parsed.level)) {
+        return { level: DEFAULT_AUTONOMY_LEVEL, changedAt: '' };
+      }
       const changedAt = (parsed as { changedAt?: unknown }).changedAt;
       return {
         level: parsed.level,
@@ -196,8 +258,29 @@ export async function saveAutonomy(
   const settings: AutonomySettings = { level, changedAt: now };
   const path = settingsPath(atlasHome);
   await mkdir(dirname(path), { recursive: true });
+  const raw = JSON.stringify(settings, null, 2);
+  // Write the evidence first: a settings file that lands without it is treated
+  // as untampered-but-unproven and falls back to full confirmation.
+  await writeTamperEvidence(atlasHome, raw);
   await writeFile(path, JSON.stringify(settings, null, 2), { mode: 0o600 });
   return settings;
+}
+
+/** Synchronous evidence check, for the cache-only path. */
+function evidenceMatchesSync(
+  atlasHome: string,
+  raw: string,
+  level: AutonomyLevel,
+): boolean {
+  if (level === DEFAULT_AUTONOMY_LEVEL) return true;
+  try {
+    return (
+      readFileSync(tamperEvidencePath(atlasHome), 'utf8').trim() ===
+      digestOf(raw)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function isAutonomyLevel(value: unknown): value is AutonomyLevel {
@@ -241,9 +324,14 @@ function isCatastrophicTarget(
   const raw = target.trim();
   if (raw === '') return false;
 
-  // `~`, `~/`, `~/*` and `$HOME` forms never need further proof.
-  if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~/*')) return true;
-  if (raw.startsWith('$HOME')) return true;
+  // The home ROOT, however spelled, is catastrophic. A specific subdirectory
+  // is not - `rm -rf ~/Downloads/foo` is ordinary cleanup and must ask rather
+  // than be refused outright.
+  const withoutSlash = raw.replace(/\/+$/, '');
+  if (withoutSlash === '~' || withoutSlash === '$HOME') return true;
+  // A glob that stands for everything in the home directory.
+  if (/^~(\/\*|\/\.\*)?$/.test(withoutSlash)) return true;
+  if (/^\$HOME(\/\*|\/\.\*)?$/.test(withoutSlash)) return true;
 
   const hasGlob = /[*?]/.test(raw);
 
@@ -269,6 +357,8 @@ function isCatastrophicTarget(
   if (path === resolvedHome) return true;
   // An ancestor of home: wiping `/home` takes every home with it.
   if (resolvedHome.startsWith(`${path}/`)) return true;
+  // A glob that covers the whole home tree, e.g. `rm -rf ~/*`.
+  if (hasGlob && path === resolvedHome) return true;
   // A glob that covers home, such as `/home/*`.
   if (hasGlob && resolvedHome.startsWith(path)) return true;
 
@@ -277,6 +367,9 @@ function isCatastrophicTarget(
 
 /** Writes that would change Atlas's own gating or safety configuration. */
 function isSelfModification(command: string): boolean {
+  // Literal names, but also the ways a command can name them without spelling
+  // them out: a glob covering the atlas home, a find that deletes every file
+  // under it, or a variable standing in for the directory.
   const patterns = [
     /atlas\.lock/,
     /permissions\.json/,
@@ -284,8 +377,16 @@ function isSelfModification(command: string): boolean {
     /\batlas\.db\b/,
     /autonomy\.json/,
     /risk-classifier|rule-engine|safe-bin-profiles|default-rules/,
+    /\*\.db\b/,
+    /\.atlas/,
+    /\$\{?ATLAS_HOME\}?/i,
+    /\$HOME\/\.atlas/,
   ];
-  return patterns.some((pattern) => pattern.test(command));
+  if (!patterns.some((pattern) => pattern.test(command))) return false;
+  // A mutation, not a read. `ls ~/.atlas` is inspection, not tampering.
+  return /\b(rm|unlink|shred|truncate|dd|mv|cp|tee|chmod|chown|install|find|ln|sed|truncate|printf|echo|rsync)\b/.test(
+    command,
+  );
 }
 
 /**

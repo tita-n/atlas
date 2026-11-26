@@ -50,6 +50,18 @@ export interface ProtectedPathViolation {
  * case-insensitive filesystem, so a boundary that only matched one casing would
  * hold on Linux and fail on a colleague's Mac.
  */
+/**
+ * Compiled output Atlas actually runs.
+ *
+ * Node executes dist/, so protecting only the sources left the real gap:
+ * writing dist/permissions/default-rules.js neuters every hard deny on the next
+ * launch without touching a protected source path. Derived from the source list
+ * rather than hand-listed, because a second literal list drifted before.
+ */
+const PROTECTED_COMPILED: readonly string[] = PROTECTED_FILES.filter((file) =>
+  file.endsWith('.ts'),
+).map((file) => file.replace(/\.ts$/, '.js'));
+
 function normalize(path: string): string {
   let normalized = path.trim().replace(/\\/g, '/');
   while (normalized.startsWith('./')) normalized = normalized.slice(2);
@@ -119,6 +131,16 @@ export function checkProtectedPath(
   if (!resolution.ok) return { path, reason: resolution.reason };
   const resolved = resolution.resolved;
 
+  for (const compiled of PROTECTED_COMPILED) {
+    if (resolved === compiled) {
+      return {
+        path,
+        reason:
+          'This is compiled output Atlas actually runs. Rewriting it would ' +
+          'change the safety rules without touching their source.',
+      };
+    }
+  }
   for (const directory of PROTECTED_DIRECTORIES) {
     if (resolved.startsWith(directory) || resolved === directory.slice(0, -1)) {
       return {
