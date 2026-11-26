@@ -652,3 +652,12 @@ and §1 said `NoNewPrivs` is verified "before it reports itself as confining";
 probe with no production caller. `hiddenPaths` was documented as "paths masked
 from view" while it also contains read-only-pinned subpaths — a weaker
 guarantee — so the field's doc now distinguishes the two.
+
+## Integration update — 2026-11-26
+
+The historical statement above that `verifyIsolation` had no production caller
+describes the recovered sandbox snapshot at the time of that report. The
+integration now wraps the bwrap session in `VerifiedBwrapSession`, which runs
+the isolation check before the initial shell start and every restart. See
+`src/execution/bwrap/bwrap-environment.ts` and
+`tests/execution/bwrap-session.test.ts`.
